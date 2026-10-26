@@ -1,8 +1,11 @@
 {
-  "name": "telegram-exam-bot",
+  "name": "rauda-ilm-test",
   "version": "1.0.0",
   "private": true,
   "type": "module",
+  "scripts": {
+    "build": "echo 'Build OK'"
+  },
   "dependencies": {
     "pdf-lib": "^1.17.1",
     "@pdf-lib/fontkit": "^1.1.1"
