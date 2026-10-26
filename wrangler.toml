@@ -1,4 +1,4 @@
-name = "telegram-exam-bot"
+name = "rauda-ilm-test"
 main = "worker.js"
 compatibility_date = "2024-10-01"
 
