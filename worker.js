@@ -900,6 +900,7 @@ async function generatePdfCertificate(env, exam, fullName, gradeClean) {
     font: customFont,
     color: rgb(0.4, 0.4, 0.4)
   });
+  
 
   return await pdfDoc.save();
 }
