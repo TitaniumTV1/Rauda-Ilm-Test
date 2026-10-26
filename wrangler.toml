@@ -5,3 +5,4 @@ compatibility_date = "2024-10-01"
 [[kv_namespaces]]
 binding = "BOT_KV"
 id = "4205410541804824afe7a3c71c0a05f7"
+
