@@ -787,7 +787,7 @@ async function generatePdfCertificate(env, exam, fullName, gradeClean, percent) 
   });
 
   // Центрируем оценку (Отлично / Хорошо / Удовлетворительно)
-  const gradeText = `Оценка: ${gradeClean} (${percent.toFixed(1)}%)`;
+const gradeText = `Оценка: ${gradeClean}`;
   const gradeSize = 30;
   const gradeWidth = customFont.widthOfTextAtSize(gradeText, gradeSize);
   page.drawText(gradeText, {
