@@ -1,18 +1,30 @@
 import { PDFDocument, rgb } from "pdf-lib";
 import fontkit from "@pdf-lib/fontkit";
 
-// Ссылки на шрифты для выбора
+// Ссылки на шрифты (включая TikTok Sans Regular)
 const FONTS = {
-  roboto: { name: "Roboto (Строгий)", url: "https://cdn.jsdelivr.net/gh/googlefonts/roboto@main/src/hinted/Roboto-Bold.ttf" },
-  montserrat: { name: "Montserrat (Современный)", url: "https://cdn.jsdelivr.net/gh/JulietaUla/Montserrat/fonts/ttf/Montserrat-Bold.ttf" },
-  cormorant: { name: "Cormorant (Классический с засечками)", url: "https://cdn.jsdelivr.net/gh/skedify/cormorant/ttf/CormorantGaramond-Bold.ttf" }
+  roboto: { 
+    name: "Roboto (Строгий)", 
+    url: "https://cdn.jsdelivr.net/gh/googlefonts/roboto@main/src/hinted/Roboto-Bold.ttf" 
+  },
+  montserrat: { 
+    name: "Montserrat (Современный)", 
+    url: "https://cdn.jsdelivr.net/gh/JulietaUla/Montserrat/fonts/ttf/Montserrat-Bold.ttf" 
+  },
+  cormorant: { 
+    name: "Cormorant (Классический)", 
+    url: "https://cdn.jsdelivr.net/gh/skedify/cormorant/ttf/CormorantGaramond-Bold.ttf" 
+  },
+  tiktoksans: { 
+    name: "TikTok Sans Regular", 
+    url: "https://cdn.jsdelivr.net/gh/tiktok/TikTokSans@main/fonts/ttf/TikTokSans-Regular.ttf" 
+  }
 };
 
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
-    // 1. Установка Webhook по ссылке /setup
     if (url.pathname === "/setup") {
       const webhookUrl = `${url.origin}/webhook`;
       const res = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/setWebhook?url=${encodeURIComponent(webhookUrl)}`);
@@ -22,7 +34,6 @@ export default {
       });
     }
 
-    // 2. Входящие обновления от Telegram
     if (url.pathname === "/webhook" && request.method === "POST") {
       const update = await request.json();
       ctx.waitUntil(handleUpdate(update, env));
@@ -89,7 +100,6 @@ function findActiveAttemptExamId(user) {
   return null;
 }
 
-// Настройки расположения и стилей текста
 function ensureLayout(exam) {
   if (!exam.layout) {
     exam.layout = {
@@ -104,7 +114,6 @@ function ensureLayout(exam) {
   return exam.layout;
 }
 
-// Конвертер названий цветов в RGB для pdf-lib
 function parseColor(cName) {
   switch (cName) {
     case "black": return rgb(0.05, 0.05, 0.05);
@@ -126,7 +135,6 @@ async function handleUpdate(update, env) {
   }
 }
 
-// ================= ОФОРМЛЕНИЕ ВОПРОСА =================
 function formatQuestionText(questions, index, answers) {
   const q = questions[index];
   let text = `📝 Вопрос ${index + 1}/${questions.length}\n\n${q.text}\n\nВарианты ответов:\n`;
@@ -159,7 +167,6 @@ function getQuestionKb(questions, index, answers) {
   return { inline_keyboard: rows };
 }
 
-// ================= ОБРАБОТКА СООБЩЕНИЙ =================
 async function handleMessage(msg, env) {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
@@ -168,7 +175,6 @@ async function handleMessage(msg, env) {
   const db = await getDB(env);
   const user = await getUserData(env, userId);
 
-  // --- Команда /admin ---
   if (text === "/admin" && isAdmin(userId, env)) {
     user.state = null;
     user.temp = {};
@@ -177,7 +183,6 @@ async function handleMessage(msg, env) {
     return;
   }
 
-  // --- Команда /cancel ---
   if (text === "/cancel") {
     const activeExamId = findActiveAttemptExamId(user);
     if (!activeExamId) {
@@ -201,13 +206,12 @@ async function handleMessage(msg, env) {
     return;
   }
 
-  // --- Команда /start ---
   if (text === "/start") {
     const activeExamId = findActiveAttemptExamId(user);
     if (activeExamId) {
       await tg(env, "sendMessage", {
         chat_id: chatId,
-        text: "⚠️ *У вас уже есть начатый экзамен!*\n\nПродолжайте прохождение или используйте /cancel для отмены.\n⚠️ Помните: отмена считается использованной попыткой!",
+        text: "⚠️ *У вас уже есть начатый экзамен!*\n\nПродолжайте прохождение или используйте /cancel для отмены.",
         parse_mode: "Markdown"
       });
       return;
@@ -229,13 +233,12 @@ async function handleMessage(msg, env) {
     return;
   }
 
-  // --- Команда /exam ---
   if (text === "/exam") {
     const activeExamId = findActiveAttemptExamId(user);
     if (activeExamId) {
       await tg(env, "sendMessage", {
         chat_id: chatId,
-        text: "⚠️ *У вас уже есть начатый экзамен!*\n\nПродолжайте прохождение или используйте /cancel для отмены.\n⚠️ Помните: отмена считается использованной попыткой!",
+        text: "⚠️ *У вас уже есть начатый экзамен!*\n\nПродолжайте прохождение или используйте /cancel для отмены.",
         parse_mode: "Markdown"
       });
       return;
@@ -250,7 +253,6 @@ async function handleMessage(msg, env) {
     return;
   }
 
-  // --- Ввод пароля к экзамену учеником ---
   if (user.state === "WAIT_EXAM_PASSWORD" && text) {
     const inputPwd = text.trim().toLowerCase();
     let foundExamId = null;
@@ -300,7 +302,7 @@ async function handleMessage(msg, env) {
 
     await tg(env, "sendMessage", {
       chat_id: chatId,
-      text: `🎓 *Экзамен начался!*\n📚 *${exam.title}*\n\nВам предстоит ответить на ${exam.questions.length} вопросов.\nБудьте внимательны и да поможет вам Аллах! ☝️\n\n⚠️ *ВАЖНО:*\n• У вас есть только ОДНА попытка!\n• Отмена экзамена считается использованной попыткой\n• Пересдача возможна только через администратора\n\nКоманда /cancel - отменить экзамен (попытка будет потеряна!)`,
+      text: `🎓 *Экзамен начался!*\n📚 *${exam.title}*\n\nВам предстоит ответить на ${exam.questions.length} вопросов.`,
       parse_mode: "Markdown"
     });
 
@@ -313,7 +315,6 @@ async function handleMessage(msg, env) {
     return;
   }
 
-  // --- Ожидание ФИО ученика для сертификата ---
   if (user.state === "WAIT_NAME" && text) {
     const examId = user.temp.examId;
     const exam = db.exams[examId];
@@ -324,19 +325,12 @@ async function handleMessage(msg, env) {
 
     await tg(env, "sendMessage", {
       chat_id: chatId,
-      text: "✅ *Результаты сохранены!*\n\n📜 Ваш сертификат генерируется...\nЭто может занять несколько минут при высокой нагрузке.\n\nСертификат будет отправлен вам автоматически, как только будет готов.",
-      parse_mode: "Markdown"
-    });
-
-    await tg(env, "sendMessage", {
-      chat_id: chatId,
-      text: `📊 *Краткая статистика:*\n\n✅ Правильно: ${att.correctCount}\n❌ Ошибок: ${att.errorsCount}`,
+      text: "✅ *Результаты сохранены!*\n\n📜 Ваш сертификат генерируется...",
       parse_mode: "Markdown"
     });
 
     const stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 15);
 
-    // 1. Отправка TXT-разбора
     const txtBytes = generateTxtReport(exam.questions, att.answers);
     await sendDocument(
       env,
@@ -347,7 +341,6 @@ async function handleMessage(msg, env) {
       "📄 Детальный разбор ваших ответов"
     );
 
-    // 2. Отправка PDF-сертификата
     const pdfBytes = await generatePdfCertificate(env, exam, text, att.gradeClean);
     await sendDocument(
       env,
@@ -355,12 +348,11 @@ async function handleMessage(msg, env) {
       pdfBytes,
       `certificate_${userId}_${stamp}.pdf`,
       "application/pdf",
-      "📜 Ваш сертификат готов!\nБаракаЛлаху фикум! 🌟\n\n⚠️ ВАЖНО: Пожалуйста, скачайте и надежно сохраните этот сертификат (на устройство или в облако)."
+      "📜 Ваш сертификат готов!\n\n⚠️ ВАЖНО: Пожалуйста, скачайте и надежно сохраните этот сертификат."
     );
     return;
   }
 
-  // ================= ШАГИ АДМИН-ПАНЕЛИ =================
   if (!isAdmin(userId, env)) return;
 
   if (user.state === "ADM_NEW_EXAM_TITLE" && text) {
@@ -369,7 +361,7 @@ async function handleMessage(msg, env) {
     await saveUserData(env, userId, user);
     await tg(env, "sendMessage", {
       chat_id: chatId,
-      text: "🔑 Придумайте и отправьте **пароль** для входа на этот экзамен (например: `seminar1`):",
+      text: "🔑 Придумайте и отправьте **пароль** для входа на этот экзамен:",
       parse_mode: "Markdown"
     });
     return;
@@ -451,14 +443,13 @@ async function handleMessage(msg, env) {
       await saveUserData(env, userId, user);
       await tg(env, "sendMessage", {
         chat_id: chatId,
-        text: `✅ Шаблон сертификата сохранен!\nТеперь через пульт можно настроить положение и шрифты.`
+        text: `✅ Шаблон сертификата сохранен!`
       });
       await sendExamManage(chatId, db, examId, env);
     }
     return;
   }
 
-  // Пошаговое добавление вопроса
   if (user.state === "ADM_Q_TEXT" && text) {
     user.temp.qText = text;
     user.state = "ADM_Q_A";
@@ -498,7 +489,6 @@ async function handleMessage(msg, env) {
     return;
   }
 
-  // Выдача повторной попытки по Telegram ID
   if (user.state === "ADM_RESET_UID" && text) {
     const targetId = text.replace(/\D/g, "");
     const examId = user.temp.examId;
@@ -521,7 +511,7 @@ async function handleMessage(msg, env) {
 
     await tg(env, "sendMessage", {
       chat_id: targetId,
-      text: `🎉 Администратор выдал вам новую попытку для сдачи экзамена «${exam.title}»!\nНачните экзамен: /exam`
+      text: `🎉 Администратор выдал вам новую попытку для сдачи экзамена «${exam.title}»!`
     });
     await tg(env, "sendMessage", {
       chat_id: chatId,
@@ -533,7 +523,6 @@ async function handleMessage(msg, env) {
   }
 }
 
-// ================= ОБРАБОТКА КНОПОК (CALLBACK) =================
 async function handleCallback(call, env) {
   const chatId = call.message.chat.id;
   const msgId = call.message.message_id;
@@ -543,7 +532,6 @@ async function handleCallback(call, env) {
   const db = await getDB(env);
   const user = await getUserData(env, userId);
 
-  // --- Кнопки прохождения теста ---
   if (data.startsWith("ans:") && user.state === "EXAM_IN_PROGRESS") {
     const [, idxStr, choice] = data.split(":");
     const idx = parseInt(idxStr, 10);
@@ -636,14 +624,13 @@ async function handleCallback(call, env) {
     if (percent >= exam.passPercent) {
       resText +=
         `🎉 *ПОЗДРАВЛЯЕМ!*\n` +
-        `Вы успешно сдали экзамен! Да содействует вам Аллах\n` +
-        `📝 Пожалуйста, введите вашу Фамилию и Имя для сертификата:\n` +
-        `_(Например: Мухаммад абу Ахмад)_`;
+        `Вы успешно сдали экзамен!\n` +
+        `📝 Пожалуйста, введите вашу Фамилию и Имя для сертификата:`;
       user.state = "WAIT_NAME";
     } else {
       resText +=
         `К сожалению, вы не набрали проходной балл (${exam.passPercent}%).\n` +
-        `Ваш Telegram ID для запроса пересдачи: \`${userId}\``;
+        `Ваш Telegram ID: \`${userId}\``;
       user.state = null;
     }
 
@@ -654,10 +641,8 @@ async function handleCallback(call, env) {
     return;
   }
 
-  // ================= КНОПКИ АДМИН-ПАНЕЛИ =================
   if (!isAdmin(userId, env)) return;
 
-  // --- Пульт настройки сертификата ---
   if (data.startsWith("adm:joy:")) {
     const [, , examId, target, action] = data.split(":");
     const ex = db.exams[examId];
@@ -665,7 +650,7 @@ async function handleCallback(call, env) {
     const layout = ensureLayout(ex);
 
     if (target === "font") {
-      layout.fontKey = action; // смена шрифта
+      layout.fontKey = action;
     } else {
       const item = layout[target];
       if (action === "up20") item.y += 20;
@@ -814,7 +799,6 @@ async function handleCallback(call, env) {
   await tg(env, "answerCallbackQuery", { callback_query_id: call.id });
 }
 
-// ================= МЕНЮ АДМИНИСТРАТОРА И ПУЛЬТ =================
 async function sendAdminMain(chatId, db, env, editMsgId = null) {
   const totalExams = Object.keys(db.exams).length;
   const text = `⚙️ *Панель администратора*\n\nВсего создано экзаменов: *${totalExams}*`;
@@ -870,29 +854,29 @@ async function sendCertJoystick(chatId, db, examId, target, env, editMsgId) {
 
   const titles = {
     name: "👤 Имя и Фамилия",
-    grade: "⭐️ Оценка (Отлично / Хорошо)",
+    grade: "⭐️ Оценка",
     date: "📅 Дата выдачи"
   };
 
   const text =
     `🎛 *Пульт настройки сертификата «${ex.title}»*\n\n` +
-    `Двигаем: *${titles[target] || "🔤 Общие настройки"}*\n` +
+    `Двигаем: *${titles[target] || "🔤 Настройки"}*\n` +
     `• Шрифт: *${FONTS[layout.fontKey]?.name || "Roboto"}*\n` +
     (target !== "font" ? `• Высота: \`${cur.y}\` | Сдвиг: \`${cur.dx}\` | Размер: \`${cur.size}\` | Цвет: *${cur.color}*` : "") +
     `\n\n_Используйте кнопки управления ниже:_`;
 
   const rows = [
-    // Выбор элемента для настройки
     [
       { text: `${target === "name" ? "🟢 " : ""}👤 Имя`, callback_data: `adm:joy:${examId}:name:open` },
       { text: `${target === "grade" ? "🟢 " : ""}⭐️ Оценка`, callback_data: `adm:joy:${examId}:grade:open` },
       { text: `${target === "date" ? "🟢 " : ""}📅 Дата`, callback_data: `adm:joy:${examId}:date:open` }
     ],
-    // Выбор шрифта
+    // Кнопки выбора шрифта (включая TikTok Sans)
     [
       { text: `${layout.fontKey === "roboto" ? "✅ " : ""}Roboto`, callback_data: `adm:joy:${examId}:font:roboto` },
       { text: `${layout.fontKey === "montserrat" ? "✅ " : ""}Montserrat`, callback_data: `adm:joy:${examId}:font:montserrat` },
-      { text: `${layout.fontKey === "cormorant" ? "✅ " : ""}Cormorant`, callback_data: `adm:joy:${examId}:font:cormorant` }
+      { text: `${layout.fontKey === "cormorant" ? "✅ " : ""}Cormorant`, callback_data: `adm:joy:${examId}:font:cormorant` },
+      { text: `${layout.fontKey === "tiktoksans" ? "✅ " : ""}TikTok Sans`, callback_data: `adm:joy:${examId}:font:tiktoksans` }
     ]
   ];
 
@@ -915,7 +899,6 @@ async function sendCertJoystick(chatId, db, examId, target, env, editMsgId) {
         { text: "➖ Мельче", callback_data: `adm:joy:${examId}:${target}:minus` },
         { text: "➕ Крупнее", callback_data: `adm:joy:${examId}:${target}:plus` }
       ],
-      // Выбор цвета текста
       [
         { text: `${cur.color === "green" ? "✅ " : ""}Зеленый`, callback_data: `adm:joy:${examId}:${target}:color_green` },
         { text: `${cur.color === "gold" ? "✅ " : ""}Золотой`, callback_data: `adm:joy:${examId}:${target}:color_gold` },
@@ -950,7 +933,6 @@ async function sendCertJoystick(chatId, db, examId, target, env, editMsgId) {
   });
 }
 
-// ================= ГЕНЕРАЦИЯ ОТЧЕТА И СЕРТИФИКАТА =================
 function generateTxtReport(questions, answers) {
   const lines = ["ДЕТАЛЬНЫЙ РАЗБОР ВАШИХ ОТВЕТОВ", "========================================", ""];
   questions.forEach((q, i) => {
