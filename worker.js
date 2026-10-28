@@ -956,7 +956,10 @@ async function generatePdfCertificate(env, exam, fullName, gradeClean) {
   const layout = ensureLayout(exam);
   const fontConf = FONTS[layout.fontKey] || FONTS.roboto;
 
-  const fontRes = await fetch(fontConf.url);
+  // Добавляем случайный параметр, чтобы Cloudflare и KV не кэшировали старый шрифт
+  const freshUrl = `${fontConf.url}?v=${Date.now()}`;
+
+  const fontRes = await fetch(freshUrl);
   const fontBytes = await fontRes.arrayBuffer();
   const customFont = await pdfDoc.embedFont(fontBytes);
 
