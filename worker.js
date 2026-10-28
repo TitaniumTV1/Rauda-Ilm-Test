@@ -1,8 +1,12 @@
 import { PDFDocument, rgb } from "pdf-lib";
 import fontkit from "@pdf-lib/fontkit";
 
-// Кириллический шрифт для сертификата
-const FONT_URL = "https://cdn.jsdelivr.net/gh/googlefonts/roboto@main/src/hinted/Roboto-Bold.ttf";
+// Ссылки на шрифты для выбора
+const FONTS = {
+  roboto: { name: "Roboto (Строгий)", url: "https://cdn.jsdelivr.net/gh/googlefonts/roboto@main/src/hinted/Roboto-Bold.ttf" },
+  montserrat: { name: "Montserrat (Современный)", url: "https://cdn.jsdelivr.net/gh/JulietaUla/Montserrat/fonts/ttf/Montserrat-Bold.ttf" },
+  cormorant: { name: "Cormorant (Классический с засечками)", url: "https://cdn.jsdelivr.net/gh/skedify/cormorant/ttf/CormorantGaramond-Bold.ttf" }
+};
 
 export default {
   async fetch(request, env, ctx) {
@@ -85,16 +89,32 @@ function findActiveAttemptExamId(user) {
   return null;
 }
 
-// Настройки расположения текста по умолчанию для каждого экзамена
+// Настройки расположения и стилей текста
 function ensureLayout(exam) {
   if (!exam.layout) {
     exam.layout = {
-      name:  { dx: 0, y: exam.nameY || 480, size: 42 },
-      grade: { dx: 0, y: exam.gradeY || 340, size: 32, onlyWord: false },
-      date:  { dx: 0, y: exam.dateY || 200, size: 22, hide: false }
+      fontKey: "roboto",
+      name:  { dx: 0, y: 480, size: 42, color: "green" },
+      grade: { dx: 0, y: 340, size: 32, onlyWord: false, color: "dark" },
+      date:  { dx: 0, y: 200, size: 22, hide: false, color: "gray" }
     };
   }
+  if (!exam.layout.fontKey) exam.layout.fontKey = "roboto";
+  if (!exam.layout.name.color) exam.layout.name.color = "green";
   return exam.layout;
+}
+
+// Конвертер названий цветов в RGB для pdf-lib
+function parseColor(cName) {
+  switch (cName) {
+    case "black": return rgb(0.05, 0.05, 0.05);
+    case "gold":  return rgb(0.77, 0.63, 0.35);
+    case "white": return rgb(1.0, 1.0, 1.0);
+    case "dark":  return rgb(0.2, 0.2, 0.2);
+    case "gray":  return rgb(0.4, 0.4, 0.4);
+    case "green": 
+    default:      return rgb(0.1, 0.25, 0.15);
+  }
 }
 
 // ================= МАРШРУТИЗАТОР =================
@@ -327,7 +347,7 @@ async function handleMessage(msg, env) {
       "📄 Детальный разбор ваших ответов"
     );
 
-    // 2. Отправка PDF-сертификата с предупреждением о сохранении
+    // 2. Отправка PDF-сертификата
     const pdfBytes = await generatePdfCertificate(env, exam, text, att.gradeClean);
     await sendDocument(
       env,
@@ -335,7 +355,7 @@ async function handleMessage(msg, env) {
       pdfBytes,
       `certificate_${userId}_${stamp}.pdf`,
       "application/pdf",
-      "📜 Ваш сертификат готов!\nБаракаЛлаху фикум! 🌟\n\n⚠️ ВАЖНО: Пожалуйста, скачайте и надежно сохраните этот сертификат (на устройство или в облако). В случае утери доступа к аккаунту или удаления чата администрация не сможет восстановить ваш сертификат!"
+      "📜 Ваш сертификат готов!\nБаракаЛлаху фикум! 🌟\n\n⚠️ ВАЖНО: Пожалуйста, скачайте и надежно сохраните этот сертификат (на устройство или в облако)."
     );
     return;
   }
@@ -377,9 +397,10 @@ async function handleMessage(msg, env) {
       passPercent: pass,
       hasTemplate: false,
       layout: {
-        name:  { dx: 0, y: 480, size: 42 },
-        grade: { dx: 0, y: 340, size: 32, onlyWord: false },
-        date:  { dx: 0, y: 200, size: 22, hide: false }
+        fontKey: "roboto",
+        name:  { dx: 0, y: 480, size: 42, color: "green" },
+        grade: { dx: 0, y: 340, size: 32, onlyWord: false, color: "dark" },
+        date:  { dx: 0, y: 200, size: 22, hide: false, color: "gray" }
       },
       questions: []
     };
@@ -430,7 +451,7 @@ async function handleMessage(msg, env) {
       await saveUserData(env, userId, user);
       await tg(env, "sendMessage", {
         chat_id: chatId,
-        text: `✅ Шаблон сертификата для экзамена «${db.exams[examId].title}» сохранен!\nТеперь вы можете настроить положение текста через кнопку «🎛 Двигать текст на сертификате».`
+        text: `✅ Шаблон сертификата сохранен!\nТеперь через пульт можно настроить положение и шрифты.`
       });
       await sendExamManage(chatId, db, examId, env);
     }
@@ -500,11 +521,11 @@ async function handleMessage(msg, env) {
 
     await tg(env, "sendMessage", {
       chat_id: targetId,
-      text: `🎉 Администратор выдал вам новую попытку для сдачи экзамена «${exam.title}»!\nНачните экзамен: /exam (пароль: ${exam.password})`
+      text: `🎉 Администратор выдал вам новую попытку для сдачи экзамена «${exam.title}»!\nНачните экзамен: /exam`
     });
     await tg(env, "sendMessage", {
       chat_id: chatId,
-      text: `✅ Попытка пользователя \`${targetId}\` в экзамене «*${exam.title}*» успешно сброшена!`,
+      text: `✅ Попытка пользователя \`${targetId}\` успешно сброшена!`,
       parse_mode: "Markdown"
     });
     await sendExamManage(chatId, db, examId, env);
@@ -622,7 +643,7 @@ async function handleCallback(call, env) {
     } else {
       resText +=
         `К сожалению, вы не набрали проходной балл (${exam.passPercent}%).\n` +
-        `Ваш Telegram ID для запроса пересдачи у администратора: \`${userId}\``;
+        `Ваш Telegram ID для запроса пересдачи: \`${userId}\``;
       user.state = null;
     }
 
@@ -636,25 +657,33 @@ async function handleCallback(call, env) {
   // ================= КНОПКИ АДМИН-ПАНЕЛИ =================
   if (!isAdmin(userId, env)) return;
 
-  // --- Интерактивный пульт сдвига текста (Выше/Ниже/Влево/Вправо) ---
+  // --- Пульт настройки сертификата ---
   if (data.startsWith("adm:joy:")) {
     const [, , examId, target, action] = data.split(":");
     const ex = db.exams[examId];
     if (!ex) return;
     const layout = ensureLayout(ex);
-    const item = layout[target];
 
-    if (action === "up20") item.y += 20;
-    else if (action === "up5") item.y += 5;
-    else if (action === "down20") item.y = Math.max(0, item.y - 20);
-    else if (action === "down5") item.y = Math.max(0, item.y - 5);
-    else if (action === "left20") item.dx -= 20;
-    else if (action === "right20") item.dx += 20;
-    else if (action === "center") item.dx = 0;
-    else if (action === "plus") item.size += 2;
-    else if (action === "minus") item.size = Math.max(10, item.size - 2);
-    else if (action === "toggle_word" && target === "grade") item.onlyWord = !item.onlyWord;
-    else if (action === "toggle_hide" && target === "date") item.hide = !item.hide;
+    if (target === "font") {
+      layout.fontKey = action; // смена шрифта
+    } else {
+      const item = layout[target];
+      if (action === "up20") item.y += 20;
+      else if (action === "up5") item.y += 5;
+      else if (action === "down20") item.y = Math.max(0, item.y - 20);
+      else if (action === "down5") item.y = Math.max(0, item.y - 5);
+      else if (action === "left20") item.dx -= 20;
+      else if (action === "right20") item.dx += 20;
+      else if (action === "center") item.dx = 0;
+      else if (action === "plus") item.size += 2;
+      else if (action === "minus") item.size = Math.max(10, item.size - 2);
+      else if (action === "color_green") item.color = "green";
+      else if (action === "color_black") item.color = "black";
+      else if (action === "color_gold") item.color = "gold";
+      else if (action === "color_white") item.color = "white";
+      else if (action === "toggle_word" && target === "grade") item.onlyWord = !item.onlyWord;
+      else if (action === "toggle_hide" && target === "date") item.hide = !item.hide;
+    }
 
     if (action !== "open" && action !== "preview") {
       await saveDB(env, db);
@@ -669,7 +698,7 @@ async function handleCallback(call, env) {
         pdfBytes,
         `preview_${examId}.pdf`,
         "application/pdf",
-        `👁 Пробный сертификат «${ex.title}»\nЕсли нужно подвинуть текст — используйте стрелочки на пульте выше.`
+        `👁 Пробный сертификат «${ex.title}»`
       );
       return;
     }
@@ -689,7 +718,7 @@ async function handleCallback(call, env) {
     await tg(env, "editMessageText", {
       chat_id: chatId,
       message_id: msgId,
-      text: "Введите название нового экзамена (например: *Тест по семинару*):",
+      text: "Введите название нового экзамена:",
       parse_mode: "Markdown"
     });
   } else if (data === "adm:list") {
@@ -706,7 +735,7 @@ async function handleCallback(call, env) {
     await tg(env, "editMessageText", {
       chat_id: chatId,
       message_id: msgId,
-      text: "📚 *Выберите экзамен для настройки шаблона, вопросов или выдачи попытки:*",
+      text: "📚 *Выберите экзамен для настройки:*",
       reply_markup: { inline_keyboard: btns },
       parse_mode: "Markdown"
     });
@@ -718,11 +747,7 @@ async function handleCallback(call, env) {
     user.state = "ADM_EDIT_PWD";
     user.temp = { examId };
     await saveUserData(env, userId, user);
-    await tg(env, "editMessageText", {
-      chat_id: chatId,
-      message_id: msgId,
-      text: "🔑 Введите новый пароль для доступа к этому экзамену:"
-    });
+    await tg(env, "editMessageText", { chat_id: chatId, message_id: msgId, text: "🔑 Введите новый пароль:" });
   } else if (data.startsWith("adm:add_q:")) {
     const examId = data.split(":")[2];
     user.state = "ADM_Q_TEXT";
@@ -751,7 +776,7 @@ async function handleCallback(call, env) {
     await tg(env, "editMessageText", {
       chat_id: chatId,
       message_id: msgId,
-      text: `🖼 *Загрузка сертификата для экзамена «${ex.title}»*\n\nОтправьте картинку (PNG или JPG) вашего шаблона. Он привяжется строго к этому экзамену.`,
+      text: `🖼 *Загрузка сертификата для «${ex.title}»*\n\nОтправьте картинку (PNG или JPG).`,
       parse_mode: "Markdown"
     });
   } else if (data.startsWith("adm:pass:")) {
@@ -759,7 +784,7 @@ async function handleCallback(call, env) {
     user.state = "ADM_EDIT_PASS";
     user.temp = { examId };
     await saveUserData(env, userId, user);
-    await tg(env, "editMessageText", { chat_id: chatId, message_id: msgId, text: "Введите новый проходной процент (например: `60`):", parse_mode: "Markdown" });
+    await tg(env, "editMessageText", { chat_id: chatId, message_id: msgId, text: "Введите проходной процент:" });
   } else if (data.startsWith("adm:reset_uid:")) {
     const examId = data.split(":")[2];
     const ex = db.exams[examId];
@@ -769,7 +794,7 @@ async function handleCallback(call, env) {
     await tg(env, "editMessageText", {
       chat_id: chatId,
       message_id: msgId,
-      text: `🔄 *Выдача повторной попытки для экзамена «${ex.title}»*\n\nОтправьте Telegram ID ученика (только цифры):`,
+      text: `🔄 Отправьте Telegram ID ученика:`,
       parse_mode: "Markdown"
     });
   } else if (data.startsWith("adm:clear_q:")) {
@@ -792,11 +817,11 @@ async function handleCallback(call, env) {
 // ================= МЕНЮ АДМИНИСТРАТОРА И ПУЛЬТ =================
 async function sendAdminMain(chatId, db, env, editMsgId = null) {
   const totalExams = Object.keys(db.exams).length;
-  const text = `⚙️ *Панель администратора*\n\nВсего создано экзаменов: *${totalExams}*\nУченики получают доступ к нужному экзамену по его паролю.`;
+  const text = `⚙️ *Панель администратора*\n\nВсего создано экзаменов: *${totalExams}*`;
   const kb = {
     inline_keyboard: [
       [{ text: "➕ Создать новый экзамен", callback_data: "adm:new_exam" }],
-      [{ text: "📚 Список экзаменов (Шаблоны / Вопросы / Попытки)", callback_data: "adm:list" }]
+      [{ text: "📚 Список экзаменов", callback_data: "adm:list" }]
     ]
   };
   if (editMsgId) {
@@ -811,22 +836,23 @@ async function sendExamManage(chatId, db, examId, env, editMsgId = null) {
   ensureLayout(ex);
   const text =
     `📋 *Экзамен:* ${ex.title}\n` +
-    `🔑 *Пароль для входа:* \`${ex.password || "не задан"}\`\n` +
+    `🔑 *Пароль:* \`${ex.password || "не задан"}\`\n` +
     `🔢 *Вопросов:* ${ex.questions.length}\n` +
     `🎯 *Проходной балл:* ${ex.passPercent}%\n` +
-    `🖼 *Индивидуальный шаблон:* ${ex.hasTemplate ? "✅ Загружен" : "❌ Стандартный"}`;
+    `🖼 *Шаблон:* ${ex.hasTemplate ? "✅ Загружен" : "❌ Стандартный"}\n` +
+    `🔤 *Шрифт:* ${FONTS[ex.layout.fontKey]?.name || "Roboto"}`;
 
   const kb = {
     inline_keyboard: [
-      [{ text: `🔑 Изменить пароль (${ex.password || "—"})`, callback_data: `adm:pwd:${examId}` }],
+      [{ text: `🔑 Изменить пароль`, callback_data: `adm:pwd:${examId}` }],
       [{ text: "➕ Добавить вопрос", callback_data: `adm:add_q:${examId}` }],
-      [{ text: "🖼 Загрузить шаблон сертификата", callback_data: `adm:tpl:${examId}` }],
-      [{ text: "🎛 Двигать текст на сертификате (Пульт)", callback_data: `adm:joy:${examId}:name:open` }],
-      [{ text: "🔄 Выдать попытку ученику по TG ID", callback_data: `adm:reset_uid:${examId}` }],
+      [{ text: "🖼 Загрузить шаблон", callback_data: `adm:tpl:${examId}` }],
+      [{ text: "🎛 Настроить текст, шрифты и цвета (Пульт)", callback_data: `adm:joy:${examId}:name:open` }],
+      [{ text: "🔄 Выдать попытку ученику", callback_data: `adm:reset_uid:${examId}` }],
       [{ text: "🎯 Изменить проходной %", callback_data: `adm:pass:${examId}` }],
       [{ text: "🗑 Очистить вопросы", callback_data: `adm:clear_q:${examId}` }],
       [{ text: "❌ Удалить экзамен", callback_data: `adm:del:${examId}` }],
-      [{ text: "◀️ К списку экзаменов", callback_data: "adm:list" }]
+      [{ text: "◀️ К списку", callback_data: "adm:list" }]
     ]
   };
 
@@ -848,66 +874,72 @@ async function sendCertJoystick(chatId, db, examId, target, env, editMsgId) {
     date: "📅 Дата выдачи"
   };
 
-  let extraInfo = "";
-  if (target === "grade") {
-    extraInfo = `\nФормат оценки: *${cur.onlyWord ? "Только слово («Отлично»)" : "Со словом «Оценка: Отлично»"}*`;
-  } else if (target === "date") {
-    extraInfo = `\nОтображение даты: *${cur.hide ? "❌ Скрыта" : "✅ Показывается"}*`;
-  }
-
   const text =
     `🎛 *Пульт настройки сертификата «${ex.title}»*\n\n` +
-    `Сейчас двигаем: *${titles[target]}*\n` +
-    `• Высота (снизу вверх): \`${cur.y}\` пикс.\n` +
-    `• Сдвиг влево/вправо от центра: \`${cur.dx > 0 ? "+" + cur.dx : cur.dx}\` пикс.\n` +
-    `• Размер шрифта: \`${cur.size}\`${extraInfo}\n\n` +
-    `_Нажимайте стрелочки ниже, а затем нажмите «👁 Пробный PDF», чтобы увидеть результат:_`;
+    `Двигаем: *${titles[target] || "🔤 Общие настройки"}*\n` +
+    `• Шрифт: *${FONTS[layout.fontKey]?.name || "Roboto"}*\n` +
+    (target !== "font" ? `• Высота: \`${cur.y}\` | Сдвиг: \`${cur.dx}\` | Размер: \`${cur.size}\` | Цвет: *${cur.color}*` : "") +
+    `\n\n_Используйте кнопки управления ниже:_`;
 
   const rows = [
-    // Переключение между элементами: Имя / Оценка / Дата
+    // Выбор элемента для настройки
     [
       { text: `${target === "name" ? "🟢 " : ""}👤 Имя`, callback_data: `adm:joy:${examId}:name:open` },
       { text: `${target === "grade" ? "🟢 " : ""}⭐️ Оценка`, callback_data: `adm:joy:${examId}:grade:open` },
       { text: `${target === "date" ? "🟢 " : ""}📅 Дата`, callback_data: `adm:joy:${examId}:date:open` }
     ],
-    // Стрелки Вверх
+    // Выбор шрифта
     [
-      { text: "⬆️ Выше (+20)", callback_data: `adm:joy:${examId}:${target}:up20` },
-      { text: "🔼 Чуть выше (+5)", callback_data: `adm:joy:${examId}:${target}:up5` }
-    ],
-    // Стрелки Влево / Центр / Вправо
-    [
-      { text: "⬅️ Влево", callback_data: `adm:joy:${examId}:${target}:left20` },
-      { text: "🎯 По центру", callback_data: `adm:joy:${examId}:${target}:center` },
-      { text: "➡️ Вправо", callback_data: `adm:joy:${examId}:${target}:right20` }
-    ],
-    // Стрелки Вниз
-    [
-      { text: "⬇️ Ниже (-20)", callback_data: `adm:joy:${examId}:${target}:down20` },
-      { text: "🔽 Чуть ниже (-5)", callback_data: `adm:joy:${examId}:${target}:down5` }
-    ],
-    // Размер шрифта
-    [
-      { text: "➖ Шрифт меньше", callback_data: `adm:joy:${examId}:${target}:minus` },
-      { text: "➕ Шрифт крупнее", callback_data: `adm:joy:${examId}:${target}:plus` }
+      { text: `${layout.fontKey === "roboto" ? "✅ " : ""}Roboto`, callback_data: `adm:joy:${examId}:font:roboto` },
+      { text: `${layout.fontKey === "montserrat" ? "✅ " : ""}Montserrat`, callback_data: `adm:joy:${examId}:font:montserrat` },
+      { text: `${layout.fontKey === "cormorant" ? "✅ " : ""}Cormorant`, callback_data: `adm:joy:${examId}:font:cormorant` }
     ]
   ];
 
+  if (target !== "font") {
+    rows.push(
+      [
+        { text: "⬆️ Выше (+20)", callback_data: `adm:joy:${examId}:${target}:up20` },
+        { text: "🔼 (+5)", callback_data: `adm:joy:${examId}:${target}:up5` }
+      ],
+      [
+        { text: "⬅️ Влево", callback_data: `adm:joy:${examId}:${target}:left20` },
+        { text: "🎯 Центр", callback_data: `adm:joy:${examId}:${target}:center` },
+        { text: "➡️ Вправо", callback_data: `adm:joy:${examId}:${target}:right20` }
+      ],
+      [
+        { text: "⬇️ Ниже (-20)", callback_data: `adm:joy:${examId}:${target}:down20` },
+        { text: "🔽 (-5)", callback_data: `adm:joy:${examId}:${target}:down5` }
+      ],
+      [
+        { text: "➖ Мельче", callback_data: `adm:joy:${examId}:${target}:minus` },
+        { text: "➕ Крупнее", callback_data: `adm:joy:${examId}:${target}:plus` }
+      ],
+      // Выбор цвета текста
+      [
+        { text: `${cur.color === "green" ? "✅ " : ""}Зеленый`, callback_data: `adm:joy:${examId}:${target}:color_green` },
+        { text: `${cur.color === "gold" ? "✅ " : ""}Золотой`, callback_data: `adm:joy:${examId}:${target}:color_gold` },
+        { text: `${cur.color === "black" ? "✅ " : ""}Черный`, callback_data: `adm:joy:${examId}:${target}:color_black` },
+        { text: `${cur.color === "white" ? "✅ " : ""}Белый`, callback_data: `adm:joy:${examId}:${target}:color_white` }
+      ]
+    );
+  }
+
   if (target === "grade") {
     rows.push([{
-      text: cur.onlyWord ? "📝 Писать «Оценка: Отлично»" : "📝 Писать только «Отлично» (без слова Оценка)",
+      text: cur.onlyWord ? "📝 Писать «Отлично»" : "📝 Писать «Оценка: Отлично»",
       callback_data: `adm:joy:${examId}:grade:toggle_word`
     }]);
   }
   if (target === "date") {
     rows.push([{
-      text: cur.hide ? "👁 Показать дату на сертификате" : "🙈 Скрыть дату с сертификата",
+      text: cur.hide ? "👁 Показать дату" : "🙈 Скрыть дату",
       callback_data: `adm:joy:${examId}:date:toggle_hide`
     }]);
   }
 
   rows.push([{ text: "👁 Прислать пробный PDF-сертификат", callback_data: `adm:joy:${examId}:${target}:preview` }]);
-  rows.push([{ text: "◀️ Назад к настройкам экзамена", callback_data: `adm:open:${examId}` }]);
+  rows.push([{ text: "◀️ Назад к экзамену", callback_data: `adm:open:${examId}` }]);
 
   await tg(env, "editMessageText", {
     chat_id: chatId,
@@ -939,7 +971,10 @@ async function generatePdfCertificate(env, exam, fullName, gradeClean) {
   const pdfDoc = await PDFDocument.create();
   pdfDoc.registerFontkit(fontkit);
 
-  const fontRes = await fetch(FONT_URL);
+  const layout = ensureLayout(exam);
+  const fontConf = FONTS[layout.fontKey] || FONTS.roboto;
+
+  const fontRes = await fetch(fontConf.url);
   const fontBytes = await fontRes.arrayBuffer();
   const customFont = await pdfDoc.embedFont(fontBytes);
 
@@ -969,9 +1004,7 @@ async function generatePdfCertificate(env, exam, fullName, gradeClean) {
     page.drawText(title, { x: (width - tWidth) / 2, y: height - 200, size: 54, font: customFont, color: rgb(0.15, 0.15, 0.15) });
   }
 
-  const layout = ensureLayout(exam);
-
-  // 1. Фамилия и Имя
+  // 1. Имя ученика
   const nCfg = layout.name;
   const nameWidth = customFont.widthOfTextAtSize(fullName, nCfg.size);
   page.drawText(fullName, {
@@ -979,10 +1012,10 @@ async function generatePdfCertificate(env, exam, fullName, gradeClean) {
     y: nCfg.y,
     size: nCfg.size,
     font: customFont,
-    color: rgb(0.1, 0.25, 0.15)
+    color: parseColor(nCfg.color)
   });
 
-  // 2. Оценка БЕЗ процентов
+  // 2. Оценка
   const gCfg = layout.grade;
   const gradeText = gCfg.onlyWord ? gradeClean : `Оценка: ${gradeClean}`;
   const gradeWidth = customFont.widthOfTextAtSize(gradeText, gCfg.size);
@@ -991,10 +1024,10 @@ async function generatePdfCertificate(env, exam, fullName, gradeClean) {
     y: gCfg.y,
     size: gCfg.size,
     font: customFont,
-    color: rgb(0.2, 0.2, 0.2)
+    color: parseColor(gCfg.color)
   });
 
-  // 3. Дата (если не скрыта)
+  // 3. Дата
   const dCfg = layout.date;
   if (!dCfg.hide) {
     const dateStr = new Date().toLocaleDateString("ru-RU");
@@ -1004,7 +1037,7 @@ async function generatePdfCertificate(env, exam, fullName, gradeClean) {
       y: dCfg.y,
       size: dCfg.size,
       font: customFont,
-      color: rgb(0.4, 0.4, 0.4)
+      color: parseColor(dCfg.color)
     });
   }
 
