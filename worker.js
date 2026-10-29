@@ -1,23 +1,31 @@
 import { PDFDocument, rgb } from "pdf-lib";
 import fontkit from "@pdf-lib/fontkit";
 
-// Ссылки на шрифты (включая TikTok Sans Regular)
+// Встроенные шрифты (также можно загрузить любой свой .ttf файл через админ-панель)
 const FONTS = {
-  roboto: { 
-    name: "Roboto (Строгий)", 
-    url: "https://cdn.jsdelivr.net/gh/googlefonts/roboto@main/src/hinted/Roboto-Bold.ttf" 
+  roboto: {
+    name: "Roboto Bold",
+    url: "https://cdn.jsdelivr.net/gh/googlefonts/roboto@main/src/hinted/Roboto-Bold.ttf"
   },
-  montserrat: { 
-    name: "Montserrat (Современный)", 
-    url: "https://cdn.jsdelivr.net/gh/JulietaUla/Montserrat/fonts/ttf/Montserrat-Bold.ttf" 
+  roboto_reg: {
+    name: "Roboto Regular",
+    url: "https://cdn.jsdelivr.net/gh/googlefonts/roboto@main/src/hinted/Roboto-Regular.ttf"
   },
-  cormorant: { 
-    name: "Cormorant (Классический)", 
-    url: "https://cdn.jsdelivr.net/gh/skedify/cormorant/ttf/CormorantGaramond-Bold.ttf" 
+  montserrat: {
+    name: "Montserrat",
+    url: "https://cdn.jsdelivr.net/gh/JulietaUla/Montserrat@master/fonts/ttf/Montserrat-Bold.ttf"
   },
-  tiktoksans: { 
-    name: "TikTok Sans Regular", 
-    url: "https://cdn.jsdelivr.net/gh/tiktok/TikTokSans@main/fonts/ttf/TikTokSans-Regular.ttf" 
+  cormorant: {
+    name: "Cormorant",
+    url: "https://cdn.jsdelivr.net/gh/CatharsisFonts/Cormorant@master/fonts/ttf/CormorantGaramond-Bold.ttf"
+  },
+  tiktoksans: {
+    name: "TikTok Sans Regular",
+    url: "https://cdn.jsdelivr.net/gh/tiktok/TikTokSans@main/fonts/ttf/TikTokSans-Regular.ttf"
+  },
+  custom: {
+    name: "Свой шрифт (.ttf из памяти)",
+    url: null
   }
 };
 
@@ -74,6 +82,35 @@ function isAdmin(userId, env) {
   return ids.includes(String(userId));
 }
 
+// ================= НИЖНИЕ КНОПКИ (REPLY KEYBOARD) =================
+function getStudentKeyboard(userId, env, hasActiveExam = false) {
+  const keyboard = [
+    [{ text: "📝 Сдать экзамен" }, { text: "📜 Мои экзамены и сертификаты" }]
+  ];
+  if (hasActiveExam) {
+    keyboard.push([{ text: "❌ Отменить экзамен" }]);
+  }
+  if (isAdmin(userId, env)) {
+    keyboard.push([{ text: "⚙️ Админ-панель" }]);
+  }
+  return {
+    keyboard,
+    resize_keyboard: true,
+    is_persistent: true
+  };
+}
+
+function getAdminKeyboard() {
+  return {
+    keyboard: [
+      [{ text: "📚 Список экзаменов" }, { text: "➕ Создать экзамен" }],
+      [{ text: "🔤 Загрузить шрифт (.ttf)" }, { text: "⬅️ Режим ученика" }]
+    ],
+    resize_keyboard: true,
+    is_persistent: true
+  };
+}
+
 // ================= БАЗА ДАННЫХ CLOUDFLARE KV =================
 async function getDB(env) {
   const data = await env.BOT_KV.get("DB_MAIN", "json");
@@ -109,8 +146,12 @@ function ensureLayout(exam) {
       date:  { dx: 0, y: 200, size: 22, hide: false, color: "gray" }
     };
   }
-  if (!exam.layout.fontKey) exam.layout.fontKey = "roboto";
+  if (!exam.layout.fontKey || !FONTS[exam.layout.fontKey]) {
+    exam.layout.fontKey = "roboto";
+  }
   if (!exam.layout.name.color) exam.layout.name.color = "green";
+  if (!exam.layout.grade.color) exam.layout.grade.color = "dark";
+  if (!exam.layout.date.color) exam.layout.date.color = "gray";
   return exam.layout;
 }
 
@@ -121,7 +162,7 @@ function parseColor(cName) {
     case "white": return rgb(1.0, 1.0, 1.0);
     case "dark":  return rgb(0.2, 0.2, 0.2);
     case "gray":  return rgb(0.4, 0.4, 0.4);
-    case "green": 
+    case "green":
     default:      return rgb(0.1, 0.25, 0.15);
   }
 }
@@ -167,6 +208,141 @@ function getQuestionKb(questions, index, answers) {
   return { inline_keyboard: rows };
 }
 
+// Запуск экзамена для ученика
+async function startStudentExam(chatId, userId, examId, exam, user, env) {
+  user.attempts[examId] = { status: "active", answers: {} };
+  user.state = "EXAM_IN_PROGRESS";
+  user.temp = { examId };
+  await saveUserData(env, userId, user);
+
+  await tg(env, "sendMessage", {
+    chat_id: chatId,
+    text: `🎓 *Экзамен начался!*\n📚 *${exam.title}*\n\nВсего вопросов: ${exam.questions.length}.\nДля отмены можно использовать кнопку внизу экрана.`,
+    reply_markup: getStudentKeyboard(userId, env, true),
+    parse_mode: "Markdown"
+  });
+
+  await tg(env, "sendMessage", {
+    chat_id: chatId,
+    text: formatQuestionText(exam.questions, 0, {}),
+    reply_markup: getQuestionKb(exam.questions, 0, {}),
+    parse_mode: "Markdown"
+  });
+}
+
+// Показ списка сданных экзаменов ученика
+async function sendStudentExamsList(chatId, userId, db, user, env, editMsgId = null) {
+  const entries = Object.entries(user.attempts || {}).filter(
+    ([, att]) => att && (att.status === "completed" || att.status === "cancelled")
+  );
+
+  if (entries.length === 0) {
+    const emptyText = "📜 У вас пока нет сданных экзаменов.\n\nНажмите кнопку *«📝 Сдать экзамен»* внизу экрана, чтобы начать.";
+    if (editMsgId) {
+      await tg(env, "editMessageText", { chat_id: chatId, message_id: editMsgId, text: emptyText, parse_mode: "Markdown" });
+    } else {
+      await tg(env, "sendMessage", {
+        chat_id: chatId,
+        text: emptyText,
+        reply_markup: getStudentKeyboard(userId, env, Boolean(findActiveAttemptExamId(user))),
+        parse_mode: "Markdown"
+      });
+    }
+    return;
+  }
+
+  const rows = [];
+  for (const [exId, att] of entries) {
+    const ex = db.exams[exId];
+    const title = ex ? ex.title : "Удаленный экзамен";
+    const badge = att.status === "cancelled"
+      ? "❌ Отменен"
+      : `${att.gradeClean || "Завершен"} (${(att.percent || 0).toFixed(0)}%)`;
+    rows.push([{
+      text: `📘 ${title} — ${badge}`,
+      callback_data: `my_exam:${exId}`
+    }]);
+  }
+
+  const text = "🎓 *Ваши экзамены и сертификаты:*\n\nВыберите предмет из списка ниже, чтобы посмотреть дату сдачи, оценку, скачать сертификат или пересдать экзамен:";
+  if (editMsgId) {
+    await tg(env, "editMessageText", {
+      chat_id: chatId,
+      message_id: editMsgId,
+      text,
+      reply_markup: { inline_keyboard: rows },
+      parse_mode: "Markdown"
+    });
+  } else {
+    await tg(env, "sendMessage", {
+      chat_id: chatId,
+      text,
+      reply_markup: { inline_keyboard: rows },
+      parse_mode: "Markdown"
+    });
+  }
+}
+
+// Показ подробной карточки конкретного сданного экзамена
+async function sendStudentExamDetail(chatId, userId, examId, db, user, env, editMsgId = null) {
+  const ex = db.exams[examId];
+  const att = user.attempts?.[examId];
+
+  if (!ex || !att) {
+    await tg(env, "sendMessage", { chat_id: chatId, text: "⚠️ Информация об экзамене не найдена." });
+    return;
+  }
+
+  const passed = att.status === "completed" && (att.percent || 0) >= ex.passPercent;
+  const dateText = att.dateStr || "Ранее";
+  const gradeText = att.status === "cancelled" ? "Экзамен был отменен ❌" : `${att.gradeClean} (${(att.percent || 0).toFixed(1)}%)`;
+  const scoreDetail = att.status === "cancelled" ? "—" : `${att.correctCount || 0} из ${ex.questions.length}`;
+  const retakeStatus = att.canRetake ? "✅ Доступна пересдача" : "❌ Попытка использована";
+
+  let text =
+    `📘 *Предмет:* ${ex.title}\n` +
+    `📅 *Дата сдачи:* ${dateText}\n` +
+    `🎯 *Оценка:* ${gradeText}\n` +
+    `📊 *Правильных ответов:* ${scoreDetail}\n` +
+    `👤 *Имя в сертификате:* ${att.fullName || "не указано"}\n` +
+    `🔄 *Статус пересдачи:* ${retakeStatus}`;
+
+  const rows = [];
+
+  if (passed) {
+    rows.push([{ text: "📜 Получить сертификат повторно (PDF)", callback_data: `reissue_cert:${examId}` }]);
+  }
+  if (att.status === "completed") {
+    rows.push([{ text: "📄 Скачать детальный разбор ответов (TXT)", callback_data: `reissue_txt:${examId}` }]);
+  }
+
+  if (att.canRetake) {
+    rows.push([{ text: "🔄 Пересдать этот экзамен сейчас", callback_data: `retake_now:${examId}` }]);
+  } else {
+    rows.push([{ text: "🔄 Запросить возможность пересдачи", callback_data: `ask_retake:${examId}` }]);
+  }
+
+  rows.push([{ text: "◀️ К списку моих экзаменов", callback_data: "my_exams_list" }]);
+
+  if (editMsgId) {
+    await tg(env, "editMessageText", {
+      chat_id: chatId,
+      message_id: editMsgId,
+      text,
+      reply_markup: { inline_keyboard: rows },
+      parse_mode: "Markdown"
+    });
+  } else {
+    await tg(env, "sendMessage", {
+      chat_id: chatId,
+      text,
+      reply_markup: { inline_keyboard: rows },
+      parse_mode: "Markdown"
+    });
+  }
+}
+
+// ================= ОБРАБОТКА СООБЩЕНИЙ =================
 async function handleMessage(msg, env) {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
@@ -175,33 +351,87 @@ async function handleMessage(msg, env) {
   const db = await getDB(env);
   const user = await getUserData(env, userId);
 
-  if (text === "/admin" && isAdmin(userId, env)) {
+  // 1. ПЕРЕХВАТ НИЖНИХ КНОПОК И КОМАНД АДМИНА
+  if ((text === "/admin" || text === "⚙️ Админ-панель") && isAdmin(userId, env)) {
     user.state = null;
     user.temp = {};
     await saveUserData(env, userId, user);
+    await tg(env, "sendMessage", {
+      chat_id: chatId,
+      text: "⚙️ Вы перешли в режим администратора.",
+      reply_markup: getAdminKeyboard()
+    });
     await sendAdminMain(chatId, db, env);
     return;
   }
 
-  if (text === "/cancel") {
+  if (text === "⬅️ Режим ученика") {
+    user.state = null;
+    user.temp = {};
+    await saveUserData(env, userId, user);
+    await tg(env, "sendMessage", {
+      chat_id: chatId,
+      text: "🏠 Главное меню ученика:",
+      reply_markup: getStudentKeyboard(userId, env, Boolean(findActiveAttemptExamId(user)))
+    });
+    return;
+  }
+
+  if (text === "📚 Список экзаменов" && isAdmin(userId, env)) {
+    user.state = null;
+    await saveUserData(env, userId, user);
+    await sendAdminExamList(chatId, db, env);
+    return;
+  }
+
+  if (text === "➕ Создать экзамен" && isAdmin(userId, env)) {
+    user.state = "ADM_NEW_EXAM_TITLE";
+    user.temp = {};
+    await saveUserData(env, userId, user);
+    await tg(env, "sendMessage", {
+      chat_id: chatId,
+      text: "Введите название нового экзамена (например: *Акыда — 1 семестр*):",
+      parse_mode: "Markdown"
+    });
+    return;
+  }
+
+  if (text === "🔤 Загрузить шрифт (.ttf)" && isAdmin(userId, env)) {
+    user.state = "ADM_UPLOAD_FONT";
+    await saveUserData(env, userId, user);
+    await tg(env, "sendMessage", {
+      chat_id: chatId,
+      text: "🔤 *Загрузка своего шрифта*\n\nОтправьте боту файл шрифта в формате `.ttf` или `.otf` (например, `TikTokSans-Regular.ttf`).\nБот сохранит его в память и будет использовать для сертификатов!",
+      parse_mode: "Markdown"
+    });
+    return;
+  }
+
+  // 2. ПЕРЕХВАТ НИЖНИХ КНОПОК И КОМАНД УЧЕНИКА
+  if (text === "/cancel" || text === "❌ Отменить экзамен") {
     const activeExamId = findActiveAttemptExamId(user);
     if (!activeExamId) {
-      if (user.state === "WAIT_EXAM_PASSWORD") {
-        user.state = null;
-        await saveUserData(env, userId, user);
-      }
-      await tg(env, "sendMessage", { chat_id: chatId, text: "У вас нет активного экзамена." });
+      user.state = null;
+      await saveUserData(env, userId, user);
+      await tg(env, "sendMessage", {
+        chat_id: chatId,
+        text: "У вас нет активного экзамена.",
+        reply_markup: getStudentKeyboard(userId, env, false)
+      });
       return;
     }
 
     user.attempts[activeExamId].status = "cancelled";
+    user.attempts[activeExamId].dateStr = new Date().toLocaleDateString("ru-RU");
+    user.attempts[activeExamId].canRetake = false;
     user.state = null;
     user.temp = {};
     await saveUserData(env, userId, user);
 
     await tg(env, "sendMessage", {
       chat_id: chatId,
-      text: "❌ Экзамен отменен. Попытка засчитана как использованная."
+      text: "❌ Экзамен отменен. Попытка засчитана как использованная.",
+      reply_markup: getStudentKeyboard(userId, env, false)
     });
     return;
   }
@@ -211,34 +441,40 @@ async function handleMessage(msg, env) {
     if (activeExamId) {
       await tg(env, "sendMessage", {
         chat_id: chatId,
-        text: "⚠️ *У вас уже есть начатый экзамен!*\n\nПродолжайте прохождение или используйте /cancel для отмены.",
+        text: "⚠️ *У вас есть незавершенный экзамен!*\nПродолжайте отвечать на вопросы выше или нажмите кнопку «❌ Отменить экзамен» внизу экрана.",
+        reply_markup: getStudentKeyboard(userId, env, true),
         parse_mode: "Markdown"
       });
       return;
     }
 
-    const completedCount = Object.values(user.attempts || {}).filter(a => a.status === "completed").length;
-    if (completedCount === 0) {
-      await tg(env, "sendMessage", {
-        chat_id: chatId,
-        text: "У вас пока нет завершенных попыток.\n\nНачните экзамен: /exam"
-      });
-    } else {
-      await tg(env, "sendMessage", {
-        chat_id: chatId,
-        text: `Добро пожаловать!\nДля начала нового экзамена нажмите: /exam\n\nВаш Telegram ID: \`${userId}\``,
-        parse_mode: "Markdown"
-      });
-    }
+    user.state = null;
+    await saveUserData(env, userId, user);
+    await tg(env, "sendMessage", {
+      chat_id: chatId,
+      text: `Ассаляму алейкум! Добро пожаловать в экзаменационный бот.\n\nВыберите нужное действие на кнопках внизу экрана 👇\nВаш Telegram ID: \`${userId}\``,
+      reply_markup: getStudentKeyboard(userId, env, false),
+      parse_mode: "Markdown"
+    });
     return;
   }
 
-  if (text === "/exam") {
+  if (text === "/certificates" || text === "/my" || text === "📜 Мои экзамены и сертификаты") {
+    if (user.state === "WAIT_EXAM_PASSWORD") {
+      user.state = null;
+      await saveUserData(env, userId, user);
+    }
+    await sendStudentExamsList(chatId, userId, db, user, env);
+    return;
+  }
+
+  if (text === "/exam" || text === "📝 Сдать экзамен") {
     const activeExamId = findActiveAttemptExamId(user);
     if (activeExamId) {
       await tg(env, "sendMessage", {
         chat_id: chatId,
-        text: "⚠️ *У вас уже есть начатый экзамен!*\n\nПродолжайте прохождение или используйте /cancel для отмены.",
+        text: "⚠️ *У вас уже есть начатый экзамен!*\nПродолжайте прохождение или нажмите «❌ Отменить экзамен» внизу.",
+        reply_markup: getStudentKeyboard(userId, env, true),
         parse_mode: "Markdown"
       });
       return;
@@ -248,11 +484,13 @@ async function handleMessage(msg, env) {
     await saveUserData(env, userId, user);
     await tg(env, "sendMessage", {
       chat_id: chatId,
-      text: "🔑 Пожалуйста, введите пароль к экзамену:"
+      text: "🔑 Пожалуйста, введите пароль к экзамену:",
+      reply_markup: getStudentKeyboard(userId, env, false)
     });
     return;
   }
 
+  // 3. ВВОД ПАРОЛЯ К ЭКЗАМЕНУ
   if (user.state === "WAIT_EXAM_PASSWORD" && text) {
     const inputPwd = text.trim().toLowerCase();
     let foundExamId = null;
@@ -284,37 +522,22 @@ async function handleMessage(msg, env) {
     }
 
     const att = user.attempts[foundExamId];
-    if (att && att.status !== "active") {
+    if (att && att.status !== "active" && !att.canRetake) {
       user.state = null;
       await saveUserData(env, userId, user);
       await tg(env, "sendMessage", {
         chat_id: chatId,
-        text: `⚠️ Вы уже использовали свою единственную попытку в экзамене «*${exam.title}*»!\nПересдача возможна только через администратора (ваш ID: \`${userId}\`).`,
+        text: `⚠️ Вы уже сдавали экзамен «*${exam.title}*»!\nПосмотреть результат или скачать сертификат можно в разделе «📜 Мои экзамены и сертификаты».\n\nДля пересдачи обратитесь к администратору (ваш ID: \`${userId}\`).`,
         parse_mode: "Markdown"
       });
       return;
     }
 
-    user.attempts[foundExamId] = { status: "active", answers: {} };
-    user.state = "EXAM_IN_PROGRESS";
-    user.temp = { examId: foundExamId };
-    await saveUserData(env, userId, user);
-
-    await tg(env, "sendMessage", {
-      chat_id: chatId,
-      text: `🎓 *Экзамен начался!*\n📚 *${exam.title}*\n\nВам предстоит ответить на ${exam.questions.length} вопросов.`,
-      parse_mode: "Markdown"
-    });
-
-    await tg(env, "sendMessage", {
-      chat_id: chatId,
-      text: formatQuestionText(exam.questions, 0, {}),
-      reply_markup: getQuestionKb(exam.questions, 0, {}),
-      parse_mode: "Markdown"
-    });
+    await startStudentExam(chatId, userId, foundExamId, exam, user, env);
     return;
   }
 
+  // 4. ВВОД ИМЕНИ ДЛЯ СЕРТИФИКАТА
   if (user.state === "WAIT_NAME" && text) {
     const examId = user.temp.examId;
     const exam = db.exams[examId];
@@ -325,7 +548,8 @@ async function handleMessage(msg, env) {
 
     await tg(env, "sendMessage", {
       chat_id: chatId,
-      text: "✅ *Результаты сохранены!*\n\n📜 Ваш сертификат генерируется...",
+      text: "✅ *Имя сохранено!* Ваш сертификат генерируется...",
+      reply_markup: getStudentKeyboard(userId, env, false),
       parse_mode: "Markdown"
     });
 
@@ -341,19 +565,50 @@ async function handleMessage(msg, env) {
       "📄 Детальный разбор ваших ответов"
     );
 
-    const pdfBytes = await generatePdfCertificate(env, exam, text, att.gradeClean);
+    const pdfBytes = await generatePdfCertificate(env, exam, text, att.gradeClean, att.dateStr);
     await sendDocument(
       env,
       chatId,
       pdfBytes,
       `certificate_${userId}_${stamp}.pdf`,
       "application/pdf",
-      "📜 Ваш сертификат готов!\n\n⚠️ ВАЖНО: Пожалуйста, скачайте и надежно сохраните этот сертификат."
+      "📜 Ваш сертификат готов!\nВы всегда сможете скачать его повторно по кнопке «📜 Мои экзамены и сертификаты» внизу экрана."
     );
     return;
   }
 
+  // ================= ШАГИ АДМИН-ПАНЕЛИ =================
   if (!isAdmin(userId, env)) return;
+
+  // Загрузка кастомного шрифта (.ttf / .otf)
+  if (user.state === "ADM_UPLOAD_FONT" && msg.document) {
+    const fileName = (msg.document.file_name || "").toLowerCase();
+    if (!fileName.endsWith(".ttf") && !fileName.endsWith(".otf")) {
+      await tg(env, "sendMessage", { chat_id: chatId, text: "⚠️ Пожалуйста, отправьте файл шрифта с расширением `.ttf` или `.otf`." });
+      return;
+    }
+    const fileInfo = await tg(env, "getFile", { file_id: msg.document.file_id });
+    if (fileInfo.ok) {
+      const fileRes = await fetch(`https://api.telegram.org/file/bot${env.BOT_TOKEN}/${fileInfo.result.file_path}`);
+      const buf = await fileRes.arrayBuffer();
+      await env.BOT_KV.put("CUSTOM_FONT", buf);
+
+      // Переключаем все экзамены на загруженный шрифт
+      for (const ex of Object.values(db.exams)) {
+        ensureLayout(ex).fontKey = "custom";
+      }
+      await saveDB(env, db);
+
+      user.state = null;
+      await saveUserData(env, userId, user);
+      await tg(env, "sendMessage", {
+        chat_id: chatId,
+        text: `✅ Шрифт *${msg.document.file_name}* успешно загружен в память бота и установлен для сертификатов!`,
+        parse_mode: "Markdown"
+      });
+    }
+    return;
+  }
 
   if (user.state === "ADM_NEW_EXAM_TITLE" && text) {
     user.temp.title = text;
@@ -389,7 +644,7 @@ async function handleMessage(msg, env) {
       passPercent: pass,
       hasTemplate: false,
       layout: {
-        fontKey: "roboto",
+        fontKey: "tiktoksans",
         name:  { dx: 0, y: 480, size: 42, color: "green" },
         grade: { dx: 0, y: 340, size: 32, onlyWord: false, color: "dark" },
         date:  { dx: 0, y: 200, size: 22, hide: false, color: "gray" }
@@ -441,10 +696,7 @@ async function handleMessage(msg, env) {
 
       user.state = null;
       await saveUserData(env, userId, user);
-      await tg(env, "sendMessage", {
-        chat_id: chatId,
-        text: `✅ Шаблон сертификата сохранен!`
-      });
+      await tg(env, "sendMessage", { chat_id: chatId, text: "✅ Шаблон сертификата сохранен!" });
       await sendExamManage(chatId, db, examId, env);
     }
     return;
@@ -500,22 +752,29 @@ async function handleMessage(msg, env) {
     }
 
     const targetUser = await getUserData(env, targetId);
-    if (targetUser.attempts && targetUser.attempts[examId]) {
-      delete targetUser.attempts[examId];
-      targetUser.state = null;
-      await saveUserData(env, targetId, targetUser);
+    if (!targetUser.attempts) targetUser.attempts = {};
+
+    if (targetUser.attempts[examId]) {
+      // Сохраняем прошлый результат, но открываем флаг пересдачи
+      targetUser.attempts[examId].canRetake = true;
+      if (targetUser.attempts[examId].status === "active") {
+        targetUser.attempts[examId].status = "cancelled";
+      }
     }
+    targetUser.state = null;
+    await saveUserData(env, targetId, targetUser);
 
     user.state = null;
     await saveUserData(env, userId, user);
 
     await tg(env, "sendMessage", {
       chat_id: targetId,
-      text: `🎉 Администратор выдал вам новую попытку для сдачи экзамена «${exam.title}»!`
+      text: `🎉 Администратор открыл вам возможность пересдачи экзамена «*${exam.title}*»!\n\nЗайдите в раздел *«📜 Мои экзамены и сертификаты»* внизу экрана и нажмите «🔄 Пересдать этот экзамен сейчас».`,
+      parse_mode: "Markdown"
     });
     await tg(env, "sendMessage", {
       chat_id: chatId,
-      text: `✅ Попытка пользователя \`${targetId}\` успешно сброшена!`,
+      text: `✅ Пользователю \`${targetId}\` открыта пересдача по экзамену «*${exam.title}*»!`,
       parse_mode: "Markdown"
     });
     await sendExamManage(chatId, db, examId, env);
@@ -523,6 +782,7 @@ async function handleMessage(msg, env) {
   }
 }
 
+// ================= ОБРАБОТКА INLINE-КНОПОК (CALLBACK) =================
 async function handleCallback(call, env) {
   const chatId = call.message.chat.id;
   const msgId = call.message.message_id;
@@ -532,6 +792,97 @@ async function handleCallback(call, env) {
   const db = await getDB(env);
   const user = await getUserData(env, userId);
 
+  // --- Кнопки раздела "Мои экзамены и сертификаты" ---
+  if (data === "my_exams_list") {
+    await sendStudentExamsList(chatId, userId, db, user, env, msgId);
+    await tg(env, "answerCallbackQuery", { callback_query_id: call.id });
+    return;
+  }
+
+  if (data.startsWith("my_exam:")) {
+    const examId = data.split(":")[1];
+    await sendStudentExamDetail(chatId, userId, examId, db, user, env, msgId);
+    await tg(env, "answerCallbackQuery", { callback_query_id: call.id });
+    return;
+  }
+
+  if (data.startsWith("reissue_cert:")) {
+    const examId = data.split(":")[1];
+    const ex = db.exams[examId];
+    const att = user.attempts?.[examId];
+
+    if (!ex || !att || att.status !== "completed" || (att.percent || 0) < ex.passPercent) {
+      await tg(env, "answerCallbackQuery", { callback_query_id: call.id, text: "⚠️ Сертификат недоступен.", show_alert: true });
+      return;
+    }
+
+    if (!att.fullName) {
+      user.state = "WAIT_NAME";
+      user.temp = { examId };
+      await saveUserData(env, userId, user);
+      await tg(env, "answerCallbackQuery", { callback_query_id: call.id });
+      await tg(env, "sendMessage", { chat_id: chatId, text: "📝 Введите ваши Фамилию и Имя для генерации сертификата:" });
+      return;
+    }
+
+    await tg(env, "answerCallbackQuery", { callback_query_id: call.id, text: "⏳ Генерирую ваш сертификат..." });
+    const pdfBytes = await generatePdfCertificate(env, ex, att.fullName, att.gradeClean, att.dateStr);
+    const stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 15);
+    await sendDocument(
+      env,
+      chatId,
+      pdfBytes,
+      `certificate_${userId}_${stamp}.pdf`,
+      "application/pdf",
+      `📜 Дубликат сертификата по предмету «${ex.title}»\nДата сдачи: ${att.dateStr || "—"}\nОценка: ${att.gradeClean}`
+    );
+    return;
+  }
+
+  if (data.startsWith("reissue_txt:")) {
+    const examId = data.split(":")[1];
+    const ex = db.exams[examId];
+    const att = user.attempts?.[examId];
+    if (!ex || !att || !att.answers) {
+      await tg(env, "answerCallbackQuery", { callback_query_id: call.id, text: "⚠️ Разбор не найден.", show_alert: true });
+      return;
+    }
+    await tg(env, "answerCallbackQuery", { callback_query_id: call.id, text: "⏳ Загружаю разбор..." });
+    const txtBytes = generateTxtReport(ex.questions, att.answers);
+    await sendDocument(env, chatId, txtBytes, `report_${examId}.txt`, "text/plain; charset=utf-8", `📄 Разбор ответов («${ex.title}»)`);
+    return;
+  }
+
+  if (data.startsWith("retake_now:")) {
+    const examId = data.split(":")[1];
+    const ex = db.exams[examId];
+    const att = user.attempts?.[examId];
+    if (!ex || !att || !att.canRetake) {
+      await tg(env, "answerCallbackQuery", { callback_query_id: call.id, text: "⚠️ Пересдача не назначена.", show_alert: true });
+      return;
+    }
+    if (findActiveAttemptExamId(user)) {
+      await tg(env, "answerCallbackQuery", { callback_query_id: call.id, text: "⚠️ Сначала завершите текущий активный экзамен!", show_alert: true });
+      return;
+    }
+    await tg(env, "answerCallbackQuery", { callback_query_id: call.id, text: "🚀 Начинаем пересдачу!" });
+    await startStudentExam(chatId, userId, examId, ex, user, env);
+    return;
+  }
+
+  if (data.startsWith("ask_retake:")) {
+    const examId = data.split(":")[1];
+    const ex = db.exams[examId];
+    await tg(env, "answerCallbackQuery", { callback_query_id: call.id });
+    await tg(env, "sendMessage", {
+      chat_id: chatId,
+      text: `🔄 *Запрос на пересдачу экзамена «${ex ? ex.title : ""}»*\n\nДля получения дополнительной попытки перешлите это сообщение преподавателю или администратору.\n\n👤 Ваш Telegram ID: \`${userId}\``,
+      parse_mode: "Markdown"
+    });
+    return;
+  }
+
+  // --- Кнопки прохождения теста ---
   if (data.startsWith("ans:") && user.state === "EXAM_IN_PROGRESS") {
     const [, idxStr, choice] = data.split(":");
     const idx = parseInt(idxStr, 10);
@@ -611,36 +962,44 @@ async function handleCallback(call, env) {
     att.errorsCount = errorsCount;
     att.percent = percent;
     att.gradeClean = gradeClean;
+    att.dateStr = new Date().toLocaleDateString("ru-RU");
+    att.canRetake = false;
 
     let resText =
       `🎓 *ЭКЗАМЕН ЗАВЕРШЕН!*\n` +
-      `📊 Вы прошли экзамен на ${percent.toFixed(1)}%\n\n` +
-      `📈 *РЕЗУЛЬТАТЫ:*\n` +
-      `✅ Правильно: ${correctCount}\n` +
+      `📘 Предмет: *${exam.title}*\n` +
+      `📅 Дата: ${att.dateStr}\n` +
+      `📊 Результат: *${percent.toFixed(1)}%*\n\n` +
+      `✅ Правильно: ${correctCount} из ${total}\n` +
       `❌ Ошибок: ${errorsCount}\n` +
-      `📝 Всего: ${total}\n\n` +
-      `🎯 *ОЦЕНКА:*\n${gradeDisplay}\n\n`;
+      `🎯 Оценка: *${gradeDisplay}*\n\n`;
 
     if (percent >= exam.passPercent) {
       resText +=
         `🎉 *ПОЗДРАВЛЯЕМ!*\n` +
         `Вы успешно сдали экзамен!\n` +
-        `📝 Пожалуйста, введите вашу Фамилию и Имя для сертификата:`;
+        `📝 Пожалуйста, отправьте в чат вашу **Фамилию и Имя** для сертификата:`;
       user.state = "WAIT_NAME";
     } else {
       resText +=
         `К сожалению, вы не набрали проходной балл (${exam.passPercent}%).\n` +
-        `Ваш Telegram ID: \`${userId}\``;
+        `Ваш Telegram ID для запроса пересдачи: \`${userId}\``;
       user.state = null;
     }
 
     await saveUserData(env, userId, user);
     await tg(env, "editMessageReplyMarkup", { chat_id: chatId, message_id: msgId, reply_markup: { inline_keyboard: [] } });
-    await tg(env, "sendMessage", { chat_id: chatId, text: resText, parse_mode: "Markdown" });
+    await tg(env, "sendMessage", {
+      chat_id: chatId,
+      text: resText,
+      reply_markup: getStudentKeyboard(userId, env, false),
+      parse_mode: "Markdown"
+    });
     await tg(env, "answerCallbackQuery", { callback_query_id: call.id });
     return;
   }
 
+  // ================= КНОПКИ АДМИН-ПАНЕЛИ =================
   if (!isAdmin(userId, env)) return;
 
   if (data.startsWith("adm:joy:")) {
@@ -648,27 +1007,27 @@ async function handleCallback(call, env) {
     const ex = db.exams[examId];
     if (!ex) return;
     const layout = ensureLayout(ex);
+    const activeTarget = ["name", "grade", "date"].includes(target) ? target : "name";
+    const item = layout[activeTarget];
 
-    if (target === "font") {
-      layout.fontKey = action;
-    } else {
-      const item = layout[target];
-      if (action === "up20") item.y += 20;
-      else if (action === "up5") item.y += 5;
-      else if (action === "down20") item.y = Math.max(0, item.y - 20);
-      else if (action === "down5") item.y = Math.max(0, item.y - 5);
-      else if (action === "left20") item.dx -= 20;
-      else if (action === "right20") item.dx += 20;
-      else if (action === "center") item.dx = 0;
-      else if (action === "plus") item.size += 2;
-      else if (action === "minus") item.size = Math.max(10, item.size - 2);
-      else if (action === "color_green") item.color = "green";
-      else if (action === "color_black") item.color = "black";
-      else if (action === "color_gold") item.color = "gold";
-      else if (action === "color_white") item.color = "white";
-      else if (action === "toggle_word" && target === "grade") item.onlyWord = !item.onlyWord;
-      else if (action === "toggle_hide" && target === "date") item.hide = !item.hide;
-    }
+    if (action.startsWith("setfont_")) {
+      const fKey = action.replace("setfont_", "");
+      if (FONTS[fKey]) layout.fontKey = fKey;
+    } else if (action === "up20") item.y += 20;
+    else if (action === "up5") item.y += 5;
+    else if (action === "down20") item.y = Math.max(0, item.y - 20);
+    else if (action === "down5") item.y = Math.max(0, item.y - 5);
+    else if (action === "left20") item.dx -= 20;
+    else if (action === "right20") item.dx += 20;
+    else if (action === "center") item.dx = 0;
+    else if (action === "plus") item.size += 2;
+    else if (action === "minus") item.size = Math.max(10, item.size - 2);
+    else if (action === "color_green") item.color = "green";
+    else if (action === "color_black") item.color = "black";
+    else if (action === "color_gold") item.color = "gold";
+    else if (action === "color_white") item.color = "white";
+    else if (action === "toggle_word" && activeTarget === "grade") item.onlyWord = !item.onlyWord;
+    else if (action === "toggle_hide" && activeTarget === "date") item.hide = !item.hide;
 
     if (action !== "open" && action !== "preview") {
       await saveDB(env, db);
@@ -681,14 +1040,14 @@ async function handleCallback(call, env) {
         env,
         chatId,
         pdfBytes,
-        `preview_${examId}.pdf`,
+        `preview_${examId}_${Date.now()}.pdf`,
         "application/pdf",
-        `👁 Пробный сертификат «${ex.title}»`
+        `👁 Пробный сертификат «${ex.title}»\nШрифт: ${FONTS[layout.fontKey]?.name || layout.fontKey}`
       );
       return;
     }
 
-    await sendCertJoystick(chatId, db, examId, target, env, msgId);
+    await sendCertJoystick(chatId, db, examId, activeTarget, env, msgId);
     await tg(env, "answerCallbackQuery", { callback_query_id: call.id });
     return;
   }
@@ -707,23 +1066,7 @@ async function handleCallback(call, env) {
       parse_mode: "Markdown"
     });
   } else if (data === "adm:list") {
-    const exams = Object.values(db.exams);
-    if (exams.length === 0) {
-      await tg(env, "answerCallbackQuery", { callback_query_id: call.id, text: "Список пуст. Создайте экзамен!", show_alert: true });
-      return;
-    }
-    const btns = exams.map(ex => [{
-      text: `📘 ${ex.title} | 🔑 ${ex.password || "—"} (${ex.questions.length} вопр.)`,
-      callback_data: `adm:open:${ex.id}`
-    }]);
-    btns.push([{ text: "◀️ Назад", callback_data: "adm:main" }]);
-    await tg(env, "editMessageText", {
-      chat_id: chatId,
-      message_id: msgId,
-      text: "📚 *Выберите экзамен для настройки:*",
-      reply_markup: { inline_keyboard: btns },
-      parse_mode: "Markdown"
-    });
+    await sendAdminExamList(chatId, db, env, msgId);
   } else if (data.startsWith("adm:open:")) {
     const examId = data.split(":")[2];
     await sendExamManage(chatId, db, examId, env, msgId);
@@ -779,7 +1122,7 @@ async function handleCallback(call, env) {
     await tg(env, "editMessageText", {
       chat_id: chatId,
       message_id: msgId,
-      text: `🔄 Отправьте Telegram ID ученика:`,
+      text: `🔄 *Выдача пересдачи («${ex.title}»)*\nОтправьте Telegram ID ученика:`,
       parse_mode: "Markdown"
     });
   } else if (data.startsWith("adm:clear_q:")) {
@@ -799,9 +1142,10 @@ async function handleCallback(call, env) {
   await tg(env, "answerCallbackQuery", { callback_query_id: call.id });
 }
 
+// ================= МЕНЮ АДМИНИСТРАТОРА И ПУЛЬТ =================
 async function sendAdminMain(chatId, db, env, editMsgId = null) {
   const totalExams = Object.keys(db.exams).length;
-  const text = `⚙️ *Панель администратора*\n\nВсего создано экзаменов: *${totalExams}*`;
+  const text = `⚙️ *Панель администратора*\n\nВсего создано экзаменов: *${totalExams}*\nИспользуйте кнопки ниже или меню внизу экрана.`;
   const kb = {
     inline_keyboard: [
       [{ text: "➕ Создать новый экзамен", callback_data: "adm:new_exam" }],
@@ -812,6 +1156,27 @@ async function sendAdminMain(chatId, db, env, editMsgId = null) {
     await tg(env, "editMessageText", { chat_id: chatId, message_id: editMsgId, text, reply_markup: kb, parse_mode: "Markdown" });
   } else {
     await tg(env, "sendMessage", { chat_id: chatId, text, reply_markup: kb, parse_mode: "Markdown" });
+  }
+}
+
+async function sendAdminExamList(chatId, db, env, editMsgId = null) {
+  const exams = Object.values(db.exams);
+  if (exams.length === 0) {
+    const msg = "Список экзаменов пуст. Нажмите «➕ Создать экзамен»!";
+    if (editMsgId) await tg(env, "editMessageText", { chat_id: chatId, message_id: editMsgId, text: msg });
+    else await tg(env, "sendMessage", { chat_id: chatId, text: msg });
+    return;
+  }
+  const btns = exams.map(ex => [{
+    text: `📘 ${ex.title} | 🔑 ${ex.password || "—"} (${ex.questions.length} вопр.)`,
+    callback_data: `adm:open:${ex.id}`
+  }]);
+  btns.push([{ text: "◀️ Назад", callback_data: "adm:main" }]);
+  const text = "📚 *Выберите экзамен для настройки:*";
+  if (editMsgId) {
+    await tg(env, "editMessageText", { chat_id: chatId, message_id: editMsgId, text, reply_markup: { inline_keyboard: btns }, parse_mode: "Markdown" });
+  } else {
+    await tg(env, "sendMessage", { chat_id: chatId, text, reply_markup: { inline_keyboard: btns }, parse_mode: "Markdown" });
   }
 }
 
@@ -828,11 +1193,11 @@ async function sendExamManage(chatId, db, examId, env, editMsgId = null) {
 
   const kb = {
     inline_keyboard: [
-      [{ text: `🔑 Изменить пароль`, callback_data: `adm:pwd:${examId}` }],
+      [{ text: "🔑 Изменить пароль", callback_data: `adm:pwd:${examId}` }],
       [{ text: "➕ Добавить вопрос", callback_data: `adm:add_q:${examId}` }],
-      [{ text: "🖼 Загрузить шаблон", callback_data: `adm:tpl:${examId}` }],
+      [{ text: "🖼 Загрузить шаблон сертификата", callback_data: `adm:tpl:${examId}` }],
       [{ text: "🎛 Настроить текст, шрифты и цвета (Пульт)", callback_data: `adm:joy:${examId}:name:open` }],
-      [{ text: "🔄 Выдать попытку ученику", callback_data: `adm:reset_uid:${examId}` }],
+      [{ text: "🔄 Выдать пересдачу ученику по ID", callback_data: `adm:reset_uid:${examId}` }],
       [{ text: "🎯 Изменить проходной %", callback_data: `adm:pass:${examId}` }],
       [{ text: "🗑 Очистить вопросы", callback_data: `adm:clear_q:${examId}` }],
       [{ text: "❌ Удалить экзамен", callback_data: `adm:del:${examId}` }],
@@ -850,7 +1215,8 @@ async function sendExamManage(chatId, db, examId, env, editMsgId = null) {
 async function sendCertJoystick(chatId, db, examId, target, env, editMsgId) {
   const ex = db.exams[examId];
   const layout = ensureLayout(ex);
-  const cur = layout[target];
+  const activeTarget = ["name", "grade", "date"].includes(target) ? target : "name";
+  const cur = layout[activeTarget];
 
   const titles = {
     name: "👤 Имя и Фамилия",
@@ -860,68 +1226,66 @@ async function sendCertJoystick(chatId, db, examId, target, env, editMsgId) {
 
   const text =
     `🎛 *Пульт настройки сертификата «${ex.title}»*\n\n` +
-    `Двигаем: *${titles[target] || "🔤 Настройки"}*\n` +
+    `Сейчас настраиваем: *${titles[activeTarget]}*\n` +
     `• Шрифт: *${FONTS[layout.fontKey]?.name || "Roboto"}*\n` +
-    (target !== "font" ? `• Высота: \`${cur.y}\` | Сдвиг: \`${cur.dx}\` | Размер: \`${cur.size}\` | Цвет: *${cur.color}*` : "") +
-    `\n\n_Используйте кнопки управления ниже:_`;
+    `• Высота (Y): \`${cur.y}\` | Сдвиг (X): \`${cur.dx}\` | Размер: \`${cur.size}\` | Цвет: *${cur.color}*\n\n` +
+    `_Выберите шрифт, цвет или сдвиньте элемент стрелочками:_`;
 
   const rows = [
     [
-      { text: `${target === "name" ? "🟢 " : ""}👤 Имя`, callback_data: `adm:joy:${examId}:name:open` },
-      { text: `${target === "grade" ? "🟢 " : ""}⭐️ Оценка`, callback_data: `adm:joy:${examId}:grade:open` },
-      { text: `${target === "date" ? "🟢 " : ""}📅 Дата`, callback_data: `adm:joy:${examId}:date:open` }
+      { text: `${activeTarget === "name" ? "🟢 " : ""}👤 Имя`, callback_data: `adm:joy:${examId}:name:open` },
+      { text: `${activeTarget === "grade" ? "🟢 " : ""}⭐️ Оценка`, callback_data: `adm:joy:${examId}:grade:open` },
+      { text: `${activeTarget === "date" ? "🟢 " : ""}📅 Дата`, callback_data: `adm:joy:${examId}:date:open` }
     ],
-    // Кнопки выбора шрифта (включая TikTok Sans)
+    // Выбор шрифта (сохраняет текущий activeTarget, не сбивая его!)
     [
-      { text: `${layout.fontKey === "roboto" ? "✅ " : ""}Roboto`, callback_data: `adm:joy:${examId}:font:roboto` },
-      { text: `${layout.fontKey === "montserrat" ? "✅ " : ""}Montserrat`, callback_data: `adm:joy:${examId}:font:montserrat` },
-      { text: `${layout.fontKey === "cormorant" ? "✅ " : ""}Cormorant`, callback_data: `adm:joy:${examId}:font:cormorant` },
-      { text: `${layout.fontKey === "tiktoksans" ? "✅ " : ""}TikTok Sans`, callback_data: `adm:joy:${examId}:font:tiktoksans` }
+      { text: `${layout.fontKey === "roboto" ? "✅ " : ""}Roboto`, callback_data: `adm:joy:${examId}:${activeTarget}:setfont_roboto` },
+      { text: `${layout.fontKey === "montserrat" ? "✅ " : ""}Montserrat`, callback_data: `adm:joy:${examId}:${activeTarget}:setfont_montserrat` },
+      { text: `${layout.fontKey === "cormorant" ? "✅ " : ""}Cormorant`, callback_data: `adm:joy:${examId}:${activeTarget}:setfont_cormorant` }
+    ],
+    [
+      { text: `${layout.fontKey === "tiktoksans" ? "✅ " : ""}TikTok Sans`, callback_data: `adm:joy:${examId}:${activeTarget}:setfont_tiktoksans` },
+      { text: `${layout.fontKey === "custom" ? "✅ " : ""}Свой .ttf`, callback_data: `adm:joy:${examId}:${activeTarget}:setfont_custom` }
+    ],
+    [
+      { text: "⬆️ Выше (+20)", callback_data: `adm:joy:${examId}:${activeTarget}:up20` },
+      { text: "🔼 (+5)", callback_data: `adm:joy:${examId}:${activeTarget}:up5` }
+    ],
+    [
+      { text: "⬅️ Влево", callback_data: `adm:joy:${examId}:${activeTarget}:left20` },
+      { text: "🎯 Центр", callback_data: `adm:joy:${examId}:${activeTarget}:center` },
+      { text: "➡️ Вправо", callback_data: `adm:joy:${examId}:${activeTarget}:right20` }
+    ],
+    [
+      { text: "⬇️ Ниже (-20)", callback_data: `adm:joy:${examId}:${activeTarget}:down20` },
+      { text: "🔽 (-5)", callback_data: `adm:joy:${examId}:${activeTarget}:down5` }
+    ],
+    [
+      { text: "➖ Мельче", callback_data: `adm:joy:${examId}:${activeTarget}:minus` },
+      { text: "➕ Крупнее", callback_data: `adm:joy:${examId}:${activeTarget}:plus` }
+    ],
+    [
+      { text: `${cur.color === "green" ? "✅ " : ""}Зеленый`, callback_data: `adm:joy:${examId}:${activeTarget}:color_green` },
+      { text: `${cur.color === "gold" ? "✅ " : ""}Золотой`, callback_data: `adm:joy:${examId}:${activeTarget}:color_gold` },
+      { text: `${cur.color === "black" ? "✅ " : ""}Черный`, callback_data: `adm:joy:${examId}:${activeTarget}:color_black` },
+      { text: `${cur.color === "white" ? "✅ " : ""}Белый`, callback_data: `adm:joy:${examId}:${activeTarget}:color_white` }
     ]
   ];
 
-  if (target !== "font") {
-    rows.push(
-      [
-        { text: "⬆️ Выше (+20)", callback_data: `adm:joy:${examId}:${target}:up20` },
-        { text: "🔼 (+5)", callback_data: `adm:joy:${examId}:${target}:up5` }
-      ],
-      [
-        { text: "⬅️ Влево", callback_data: `adm:joy:${examId}:${target}:left20` },
-        { text: "🎯 Центр", callback_data: `adm:joy:${examId}:${target}:center` },
-        { text: "➡️ Вправо", callback_data: `adm:joy:${examId}:${target}:right20` }
-      ],
-      [
-        { text: "⬇️ Ниже (-20)", callback_data: `adm:joy:${examId}:${target}:down20` },
-        { text: "🔽 (-5)", callback_data: `adm:joy:${examId}:${target}:down5` }
-      ],
-      [
-        { text: "➖ Мельче", callback_data: `adm:joy:${examId}:${target}:minus` },
-        { text: "➕ Крупнее", callback_data: `adm:joy:${examId}:${target}:plus` }
-      ],
-      [
-        { text: `${cur.color === "green" ? "✅ " : ""}Зеленый`, callback_data: `adm:joy:${examId}:${target}:color_green` },
-        { text: `${cur.color === "gold" ? "✅ " : ""}Золотой`, callback_data: `adm:joy:${examId}:${target}:color_gold` },
-        { text: `${cur.color === "black" ? "✅ " : ""}Черный`, callback_data: `adm:joy:${examId}:${target}:color_black` },
-        { text: `${cur.color === "white" ? "✅ " : ""}Белый`, callback_data: `adm:joy:${examId}:${target}:color_white` }
-      ]
-    );
-  }
-
-  if (target === "grade") {
+  if (activeTarget === "grade") {
     rows.push([{
       text: cur.onlyWord ? "📝 Писать «Отлично»" : "📝 Писать «Оценка: Отлично»",
       callback_data: `adm:joy:${examId}:grade:toggle_word`
     }]);
   }
-  if (target === "date") {
+  if (activeTarget === "date") {
     rows.push([{
       text: cur.hide ? "👁 Показать дату" : "🙈 Скрыть дату",
       callback_data: `adm:joy:${examId}:date:toggle_hide`
     }]);
   }
 
-  rows.push([{ text: "👁 Прислать пробный PDF-сертификат", callback_data: `adm:joy:${examId}:${target}:preview` }]);
+  rows.push([{ text: "👁 Прислать пробный PDF-сертификат", callback_data: `adm:joy:${examId}:${activeTarget}:preview` }]);
   rows.push([{ text: "◀️ Назад к экзамену", callback_data: `adm:open:${examId}` }]);
 
   await tg(env, "editMessageText", {
@@ -949,19 +1313,47 @@ function generateTxtReport(questions, answers) {
   return new TextEncoder().encode(lines.join("\n"));
 }
 
-async function generatePdfCertificate(env, exam, fullName, gradeClean) {
+async function loadFontBytes(env, fontKey) {
+  // 1. Если выбран загруженный в KV свой шрифт или есть сохраненный CUSTOM_FONT для tiktoksans
+  if (fontKey === "custom") {
+    const customBuf = await env.BOT_KV.get("CUSTOM_FONT", "arrayBuffer");
+    if (customBuf) return customBuf;
+  }
+
+  // 2. Пробуем скачать выбранный шрифт по URL
+  const fontConf = FONTS[fontKey] || FONTS.roboto;
+  if (fontConf.url) {
+    try {
+      const res = await fetch(fontConf.url);
+      if (res.ok) return await res.arrayBuffer();
+    } catch {}
+  }
+
+  // 3. Если внешний CDN для TikTok Sans недоступен, проверяем загруженный в KV шрифт или берем Roboto Regular
+  if (fontKey === "tiktoksans") {
+    const customBuf = await env.BOT_KV.get("CUSTOM_FONT", "arrayBuffer");
+    if (customBuf) return customBuf;
+    const fallbackReg = await fetch(FONTS.roboto_reg.url);
+    return await fallbackReg.arrayBuffer();
+  }
+
+  const fallback = await fetch(FONTS.roboto.url);
+  return await fallback.arrayBuffer();
+}
+
+async function generatePdfCertificate(env, exam, fullName, gradeClean, customDateStr = null) {
   const pdfDoc = await PDFDocument.create();
   pdfDoc.registerFontkit(fontkit);
 
   const layout = ensureLayout(exam);
-  const fontConf = FONTS[layout.fontKey] || FONTS.roboto;
-
-  // Добавляем случайный параметр, чтобы Cloudflare и KV не кэшировали старый шрифт
-  const freshUrl = `${fontConf.url}?v=${Date.now()}`;
-
-  const fontRes = await fetch(freshUrl);
-  const fontBytes = await fontRes.arrayBuffer();
-  const customFont = await pdfDoc.embedFont(fontBytes);
+  let customFont;
+  try {
+    const fontBytes = await loadFontBytes(env, layout.fontKey);
+    customFont = await pdfDoc.embedFont(fontBytes);
+  } catch {
+    const fallbackBytes = await (await fetch(FONTS.roboto.url)).arrayBuffer();
+    customFont = await pdfDoc.embedFont(fallbackBytes);
+  }
 
   let width = 1200;
   let height = 850;
@@ -1015,7 +1407,7 @@ async function generatePdfCertificate(env, exam, fullName, gradeClean) {
   // 3. Дата
   const dCfg = layout.date;
   if (!dCfg.hide) {
-    const dateStr = new Date().toLocaleDateString("ru-RU");
+    const dateStr = customDateStr || new Date().toLocaleDateString("ru-RU");
     const dateWidth = customFont.widthOfTextAtSize(dateStr, dCfg.size);
     page.drawText(dateStr, {
       x: (width - dateWidth) / 2 + (dCfg.dx || 0),
