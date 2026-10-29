@@ -190,6 +190,27 @@ function getQuestionReplyKb(questions, index, answers) {
   return buildReplyKb(rows);
 }
 
+function getStudentExamDetailKb(ex, att) {
+  const passed = att.status === "completed" && (att.percent || 0) >= ex.passPercent;
+  const rows = [];
+
+  if (att.canRetake) {
+    rows.push([{ text: "🔄 Пересдать этот экзамен сейчас" }]);
+  }
+  if (passed) {
+    rows.push([{ text: "📜 Получить сертификат повторно (PDF)" }]);
+  }
+  if (att.status === "completed" && att.answers && Object.keys(att.answers).length > 0) {
+    rows.push([{ text: "📄 Скачать детальный разбор ответов (TXT)" }]);
+  }
+  if (!att.canRetake) {
+    rows.push([{ text: "🔄 Запросить возможность пересдачи" }]);
+  }
+  rows.push([{ text: "◀️ К списку моих экзаменов" }, { text: "🏠 В главное меню" }]);
+
+  return buildReplyKb(rows);
+}
+
 function getAdminMainKb() {
   return buildReplyKb([
     [{ text: "📚 Список экзаменов" }, { text: "➕ Создать экзамен" }],
@@ -267,7 +288,6 @@ async function handleUpdate(update, env) {
   if (update.message) {
     await handleMessage(update.message, env);
   } else if (update.callback_query) {
-    // На случай если кто-то нажал старую кнопку в истории чата
     await tg(env, "answerCallbackQuery", {
       callback_query_id: update.callback_query.id,
       text: "Используйте кнопки внизу экрана 👇"
@@ -299,7 +319,13 @@ async function sendCurrentQuestion(chatId, exam, att, qIndex, env) {
 }
 
 async function startStudentExam(chatId, userId, examId, exam, user, env) {
-  user.attempts[examId] = { status: "active", answers: {} };
+  const prevName = user.attempts?.[examId]?.fullName || null;
+  user.attempts[examId] = {
+    status: "active",
+    answers: {},
+    canRetake: false,
+    ...(prevName ? { fullName: prevName } : {})
+  };
   user.state = "EXAM_IN_PROGRESS";
   user.temp = { examId, qIndex: 0 };
   await saveUserData(env, userId, user);
@@ -313,10 +339,14 @@ async function startStudentExam(chatId, userId, examId, exam, user, env) {
   await sendCurrentQuestion(chatId, exam, user.attempts[examId], 0, env);
 }
 
-async function sendStudentExamsList(chatId, userId, db, user, env) {
-  const entries = Object.entries(user.attempts || {}).filter(
-    ([, att]) => att && (att.status === "completed" || att.status === "cancelled")
+function getCompletedOrRetakeEntries(user) {
+  return Object.entries(user.attempts || {}).filter(
+    ([, att]) => att && (att.status === "completed" || att.status === "cancelled" || att.canRetake)
   );
+}
+
+async function sendStudentExamsList(chatId, userId, db, user, env) {
+  const entries = getCompletedOrRetakeEntries(user);
 
   if (entries.length === 0) {
     user.state = null;
@@ -336,9 +366,14 @@ async function sendStudentExamsList(chatId, userId, db, user, env) {
   entries.forEach(([exId, att], idx) => {
     const ex = db.exams[exId];
     const title = ex ? ex.title : "Удаленный экзамен";
-    const badge = att.status === "cancelled"
-      ? "❌ Отменен"
-      : `${att.gradeClean || "Завершен"} (${(att.percent || 0).toFixed(0)}%)`;
+    let badge = "";
+    if (att.canRetake) {
+      badge = "🔄 Пересдача открыта";
+    } else if (att.status === "cancelled") {
+      badge = "❌ Отменен";
+    } else {
+      badge = `${att.gradeClean || "Завершен"} (${(att.percent || 0).toFixed(0)}%)`;
+    }
     examList.push(exId);
     rows.push([{ text: `📘 ${idx + 1}. ${title} — ${badge}` }]);
   });
@@ -370,11 +405,12 @@ async function sendStudentExamDetail(chatId, userId, examId, db, user, env) {
     return;
   }
 
-  const passed = att.status === "completed" && (att.percent || 0) >= ex.passPercent;
   const dateText = att.dateStr || "Ранее";
-  const gradeText = att.status === "cancelled" ? "Экзамен был отменен ❌" : `${att.gradeClean} (${(att.percent || 0).toFixed(1)}%)`;
-  const scoreDetail = att.status === "cancelled" ? "—" : `${att.correctCount || 0} из ${ex.questions.length}`;
-  const retakeStatus = att.canRetake ? "✅ Доступна пересдача" : "❌ Попытка использована";
+  const gradeText = att.status === "completed"
+    ? `${att.gradeClean} (${(att.percent || 0).toFixed(1)}%)`
+    : (att.canRetake ? "Ожидает пересдачи 🔄" : "Экзамен был отменен ❌");
+  const scoreDetail = att.status === "completed" ? `${att.correctCount || 0} из ${ex.questions.length}` : "—";
+  const retakeStatus = att.canRetake ? "✅ Доступна пересдача (нажмите кнопку внизу)" : "❌ Попытка использована";
 
   const text =
     `📘 *Предмет:* ${ex.title}\n` +
@@ -385,20 +421,6 @@ async function sendStudentExamDetail(chatId, userId, examId, db, user, env) {
     `🔄 *Статус пересдачи:* ${retakeStatus}\n\n` +
     `_Выберите действие на кнопках внизу экрана:_`;
 
-  const rows = [];
-  if (passed) {
-    rows.push([{ text: "📜 Получить сертификат повторно (PDF)" }]);
-  }
-  if (att.status === "completed") {
-    rows.push([{ text: "📄 Скачать детальный разбор ответов (TXT)" }]);
-  }
-  if (att.canRetake) {
-    rows.push([{ text: "🔄 Пересдать этот экзамен сейчас" }]);
-  } else {
-    rows.push([{ text: "🔄 Запросить возможность пересдачи" }]);
-  }
-  rows.push([{ text: "◀️ К списку моих экзаменов" }, { text: "🏠 В главное меню" }]);
-
   user.state = "MY_EXAM_DETAIL";
   user.temp = { ...user.temp, viewExamId: examId };
   await saveUserData(env, userId, user);
@@ -406,7 +428,7 @@ async function sendStudentExamDetail(chatId, userId, examId, db, user, env) {
   await tg(env, "sendMessage", {
     chat_id: chatId,
     text,
-    reply_markup: buildReplyKb(rows),
+    reply_markup: getStudentExamDetailKb(ex, att),
     parse_mode: "Markdown"
   });
 }
@@ -442,7 +464,7 @@ async function sendAdminExamList(chatId, userId, db, user, env) {
   const rows = [];
   exams.forEach((ex, idx) => {
     adminExamList.push(ex.id);
-    rows.push([{ text: `📘 ${idx + 1}. ${ex.title} | 🔑 ${ex.password || "—"} (${ex.questions.length} вопр.)` }]);
+    rows.push([{ text: `🛠 ${idx + 1}. ${ex.title} | 🔑 ${ex.password || "—"} (${ex.questions.length} вопр.)` }]);
   });
   rows.push([{ text: "➕ Создать экзамен" }, { text: "⚙️ В админ-меню" }]);
 
@@ -525,6 +547,20 @@ async function sendCertJoystick(chatId, userId, db, examId, target, user, env) {
     reply_markup: getJoystickReplyKb(layout, activeTarget),
     parse_mode: "Markdown"
   });
+}
+
+// Помощник для определения выбранного экзамена ученика (даже если state сбился)
+function resolveStudentTargetExamId(user) {
+  if (user.temp?.viewExamId && user.attempts?.[user.temp.viewExamId]) {
+    return user.temp.viewExamId;
+  }
+  // Ищем экзамен, где открыта пересдача
+  for (const [exId, att] of Object.entries(user.attempts || {})) {
+    if (att && att.canRetake) return exId;
+  }
+  // Иначе берем последний сданный
+  const entries = getCompletedOrRetakeEntries(user);
+  return entries.length ? entries[entries.length - 1][0] : null;
 }
 
 // ================= ОБРАБОТКА СООБЩЕНИЙ И КНОПОК =================
@@ -617,7 +653,6 @@ async function handleMessage(msg, env) {
     const total = exam.questions.length;
     let qIndex = Number.isInteger(user.temp.qIndex) ? user.temp.qIndex : 0;
 
-    // Выбор ответа А / Б / В
     const choiceMatch = text.match(/^(?:✅\s*)?(?:Вариант\s+)?([АБВ])$/i);
     if (choiceMatch) {
       const choice = choiceMatch[1].toUpperCase();
@@ -650,7 +685,6 @@ async function handleMessage(msg, env) {
 
     if (text === "✅ Завершить экзамен") {
       if (Object.keys(att.answers).length < total) {
-        // Находим первый неотвеченный вопрос
         const unansweredIdx = exam.questions.findIndex((_, i) => !att.answers[i]);
         user.temp.qIndex = unansweredIdx >= 0 ? unansweredIdx : qIndex;
         await saveUserData(env, userId, user);
@@ -794,7 +828,7 @@ async function handleMessage(msg, env) {
     return;
   }
 
-  // --- 4. ОСНОВНЫЕ КНОПКИ УЧЕНИКА ---
+  // --- 4. ОСНОВНЫЕ КНОПКИ И ДЕЙСТВИЯ УЧЕНИКА ---
   if (text === "📝 Сдать экзамен" || text === "/exam") {
     const activeExamId = findActiveAttemptExamId(user);
     if (activeExamId) {
@@ -824,6 +858,113 @@ async function handleMessage(msg, env) {
     return;
   }
 
+  // Выбор экзамена учеником по кнопке "📘 1. ..." (работает даже если state сбился)
+  const studentExamMatch = text.match(/^📘\s*(\d+)\./);
+  if (studentExamMatch) {
+    const idx = parseInt(studentExamMatch[1], 10) - 1;
+    const entries = getCompletedOrRetakeEntries(user);
+    const examId = user.temp?.myExamList?.[idx] || entries[idx]?.[0];
+    if (examId) {
+      await sendStudentExamDetail(chatId, userId, examId, db, user, env);
+      return;
+    }
+  }
+
+  // Глобальная обработка кнопок карточки экзамена ученика (работает независимо от state)
+  if (
+    text === "📜 Получить сертификат повторно (PDF)" ||
+    text === "📄 Скачать детальный разбор ответов (TXT)" ||
+    text === "🔄 Пересдать этот экзамен сейчас" ||
+    text === "🔄 Запросить возможность пересдачи"
+  ) {
+    const examId = resolveStudentTargetExamId(user);
+    const ex = examId ? db.exams[examId] : null;
+    const att = examId ? user.attempts?.[examId] : null;
+
+    if (!ex || !att) {
+      await sendStudentExamsList(chatId, userId, db, user, env);
+      return;
+    }
+
+    if (text === "📜 Получить сертификат повторно (PDF)") {
+      if (att.status !== "completed" || (att.percent || 0) < ex.passPercent) {
+        await tg(env, "sendMessage", { chat_id: chatId, text: "⚠️ Сертификат по этому экзамену недоступен." });
+        return;
+      }
+      if (!att.fullName) {
+        user.state = "WAIT_NAME";
+        user.temp = { examId };
+        await saveUserData(env, userId, user);
+        await tg(env, "sendMessage", {
+          chat_id: chatId,
+          text: "📝 Введите ваши Фамилию и Имя для генерации сертификата:",
+          reply_markup: { remove_keyboard: true }
+        });
+        return;
+      }
+
+      await tg(env, "sendMessage", { chat_id: chatId, text: "⏳ Генерирую ваш сертификат..." });
+      const pdfBytes = await generatePdfCertificate(env, ex, att.fullName, att.gradeClean, att.dateStr);
+      const stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 15);
+      await sendDocument(
+        env,
+        chatId,
+        pdfBytes,
+        `certificate_${userId}_${stamp}.pdf`,
+        "application/pdf",
+        `📜 Дубликат сертификата по предмету «${ex.title}»\nДата сдачи: ${att.dateStr || "—"}\nОценка: ${att.gradeClean}`,
+        getStudentExamDetailKb(ex, att)
+      );
+      return;
+    }
+
+    if (text === "📄 Скачать детальный разбор ответов (TXT)") {
+      if (!att.answers || Object.keys(att.answers).length === 0) {
+        await tg(env, "sendMessage", { chat_id: chatId, text: "⚠️ Разбор ответов не найден." });
+        return;
+      }
+      const txtBytes = generateTxtReport(ex.questions, att.answers);
+      await sendDocument(
+        env,
+        chatId,
+        txtBytes,
+        `report_${examId}.txt`,
+        "text/plain; charset=utf-8",
+        `📄 Разбор ответов («${ex.title}»)`,
+        getStudentExamDetailKb(ex, att)
+      );
+      return;
+    }
+
+    if (text === "🔄 Пересдать этот экзамен сейчас") {
+      if (!att.canRetake) {
+        await tg(env, "sendMessage", {
+          chat_id: chatId,
+          text: "⚠️ Пересдача еще не открыта администратором.",
+          reply_markup: getStudentExamDetailKb(ex, att)
+        });
+        return;
+      }
+      if (!ex.questions || ex.questions.length === 0) {
+        await tg(env, "sendMessage", { chat_id: chatId, text: "⚠️ Вопросы для этого экзамена еще не добавлены." });
+        return;
+      }
+      await startStudentExam(chatId, userId, examId, ex, user, env);
+      return;
+    }
+
+    if (text === "🔄 Запросить возможность пересдачи") {
+      await tg(env, "sendMessage", {
+        chat_id: chatId,
+        text: `🔄 *Запрос на пересдачу экзамена «${ex.title}»*\n\nПерешлите это сообщение преподавателю или администратору.\n👤 Ваш Telegram ID: \`${userId}\``,
+        reply_markup: getStudentExamDetailKb(ex, att),
+        parse_mode: "Markdown"
+      });
+      return;
+    }
+  }
+
+  // Ввод пароля к экзамену учеником
   if (user.state === "WAIT_EXAM_PASSWORD" && text) {
     if (text === "◀️ Отмена") {
       user.state = null;
@@ -867,7 +1008,7 @@ async function handleMessage(msg, env) {
       return;
     }
 
-    const att = user.attempts[foundExamId];
+    const att = user.attempts?.[foundExamId];
     if (att && att.status !== "active" && !att.canRetake) {
       user.state = null;
       await saveUserData(env, userId, user);
@@ -882,90 +1023,6 @@ async function handleMessage(msg, env) {
 
     await startStudentExam(chatId, userId, foundExamId, exam, user, env);
     return;
-  }
-
-  // Выбор экзамена из списка сданных экзаменов ученика
-  if (user.state === "MY_EXAMS_LIST" && text) {
-    const match = text.match(/^📘\s*(\d+)\./);
-    if (match) {
-      const idx = parseInt(match[1], 10) - 1;
-      const examId = user.temp?.myExamList?.[idx];
-      if (examId) {
-        await sendStudentExamDetail(chatId, userId, examId, db, user, env);
-        return;
-      }
-    }
-  }
-
-  // Действия внутри выбранного сданного экзамена ученика
-  if (user.state === "MY_EXAM_DETAIL" && text) {
-    const examId = user.temp?.viewExamId;
-    const ex = db.exams[examId];
-    const att = user.attempts?.[examId];
-
-    if (!ex || !att) {
-      await sendStudentExamsList(chatId, userId, db, user, env);
-      return;
-    }
-
-    if (text === "📜 Получить сертификат повторно (PDF)") {
-      if (att.status !== "completed" || (att.percent || 0) < ex.passPercent) {
-        await tg(env, "sendMessage", { chat_id: chatId, text: "⚠️ Сертификат по этому экзамену недоступен." });
-        return;
-      }
-      if (!att.fullName) {
-        user.state = "WAIT_NAME";
-        user.temp = { examId };
-        await saveUserData(env, userId, user);
-        await tg(env, "sendMessage", {
-          chat_id: chatId,
-          text: "📝 Введите ваши Фамилию и Имя для генерации сертификата:",
-          reply_markup: { remove_keyboard: true }
-        });
-        return;
-      }
-
-      await tg(env, "sendMessage", { chat_id: chatId, text: "⏳ Генерирую ваш сертификат..." });
-      const pdfBytes = await generatePdfCertificate(env, ex, att.fullName, att.gradeClean, att.dateStr);
-      const stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 15);
-      await sendDocument(
-        env,
-        chatId,
-        pdfBytes,
-        `certificate_${userId}_${stamp}.pdf`,
-        "application/pdf",
-        `📜 Дубликат сертификата по предмету «${ex.title}»\nДата сдачи: ${att.dateStr || "—"}\nОценка: ${att.gradeClean}`
-      );
-      return;
-    }
-
-    if (text === "📄 Скачать детальный разбор ответов (TXT)") {
-      if (!att.answers) {
-        await tg(env, "sendMessage", { chat_id: chatId, text: "⚠️ Разбор ответов не найден." });
-        return;
-      }
-      const txtBytes = generateTxtReport(ex.questions, att.answers);
-      await sendDocument(env, chatId, txtBytes, `report_${examId}.txt`, "text/plain; charset=utf-8", `📄 Разбор ответов («${ex.title}»)`);
-      return;
-    }
-
-    if (text === "🔄 Пересдать этот экзамен сейчас") {
-      if (!att.canRetake) {
-        await tg(env, "sendMessage", { chat_id: chatId, text: "⚠️ Пересдача еще не открыта администратором." });
-        return;
-      }
-      await startStudentExam(chatId, userId, examId, ex, user, env);
-      return;
-    }
-
-    if (text === "🔄 Запросить возможность пересдачи") {
-      await tg(env, "sendMessage", {
-        chat_id: chatId,
-        text: `🔄 *Запрос на пересдачу экзамена «${ex.title}»*\n\nПерешлите это сообщение преподавателю или администратору.\n👤 Ваш Telegram ID: \`${userId}\``,
-        parse_mode: "Markdown"
-      });
-      return;
-    }
   }
 
   // ================= 5. НИЖНЕЕ МЕНЮ И ШАГИ АДМИНИСТРАТОРА =================
@@ -1001,16 +1058,15 @@ async function handleMessage(msg, env) {
     return;
   }
 
-  // Выбор экзамена из списка в админке
-  if (user.state === "ADM_EXAM_LIST" && text) {
-    const match = text.match(/^📘\s*(\d+)\./);
-    if (match) {
-      const idx = parseInt(match[1], 10) - 1;
-      const examId = user.temp?.adminExamList?.[idx];
-      if (examId && db.exams[examId]) {
-        await sendExamManage(chatId, userId, db, examId, user, env);
-        return;
-      }
+  // Выбор экзамена из списка в админке ("🛠 1. ...")
+  const adminExamMatch = text.match(/^🛠\s*(\d+)\./);
+  if (adminExamMatch) {
+    const idx = parseInt(adminExamMatch[1], 10) - 1;
+    const exams = Object.values(db.exams);
+    const examId = user.temp?.adminExamList?.[idx] || exams[idx]?.id;
+    if (examId && db.exams[examId]) {
+      await sendExamManage(chatId, userId, db, examId, user, env);
+      return;
     }
   }
 
@@ -1369,6 +1425,7 @@ async function handleMessage(msg, env) {
     return;
   }
 
+  // ВЫДАЧА ПЕРЕСДАЧИ ПО TELEGRAM ID
   if (user.state === "ADM_RESET_UID" && text) {
     const targetId = text.replace(/\D/g, "");
     const examId = user.temp.examId;
@@ -1383,23 +1440,47 @@ async function handleMessage(msg, env) {
       return;
     }
 
-    const targetUser = await getUserData(env, targetId);
+    // Если админ выдает пересдачу самому себе (для теста), используем текущий объект user
+    const isSelf = String(targetId) === String(userId);
+    const targetUser = isSelf ? user : await getUserData(env, targetId);
     if (!targetUser.attempts) targetUser.attempts = {};
 
-    if (targetUser.attempts[examId]) {
-      targetUser.attempts[examId].canRetake = true;
-      if (targetUser.attempts[examId].status === "active") {
-        targetUser.attempts[examId].status = "cancelled";
-      }
+    // Если попытка была удалена ранее или еще не существовала — создаем запись
+    if (!targetUser.attempts[examId]) {
+      targetUser.attempts[examId] = {
+        status: "cancelled",
+        gradeClean: "Не сдано",
+        percent: 0,
+        correctCount: 0,
+        errorsCount: 0,
+        dateStr: new Date().toLocaleDateString("ru-RU"),
+        answers: {}
+      };
     }
-    targetUser.state = null;
-    await saveUserData(env, targetId, targetUser);
 
-    await tg(env, "sendMessage", {
-      chat_id: targetId,
-      text: `🎉 Администратор открыл вам возможность пересдачи экзамена «*${exam.title}*»!\n\nНажмите кнопку *«📜 Мои экзамены и сертификаты»* внизу экрана, выберите предмет и нажмите «🔄 Пересдать этот экзамен сейчас».`,
-      parse_mode: "Markdown"
-    });
+    targetUser.attempts[examId].canRetake = true;
+    if (targetUser.attempts[examId].status === "active") {
+      targetUser.attempts[examId].status = "cancelled";
+    }
+
+    if (!isSelf) {
+      targetUser.state = "MY_EXAM_DETAIL";
+      targetUser.temp = { ...targetUser.temp, viewExamId: examId };
+      await saveUserData(env, targetId, targetUser);
+
+      // Отправляем ученику сообщение И СРАЗУ прикрепляем нижнюю клавиатуру с кнопкой пересдачи
+      await tg(env, "sendMessage", {
+        chat_id: targetId,
+        text:
+          `🎉 Администратор открыл вам возможность пересдачи экзамена «*${exam.title}*»!\n\n` +
+          `Нажмите кнопку *«🔄 Пересдать этот экзамен сейчас»* внизу экрана, чтобы начать:`,
+        reply_markup: getStudentExamDetailKb(exam, targetUser.attempts[examId]),
+        parse_mode: "Markdown"
+      });
+    } else {
+      await saveUserData(env, userId, user);
+    }
+
     await tg(env, "sendMessage", {
       chat_id: chatId,
       text: `✅ Пользователю \`${targetId}\` открыта пересдача по экзамену «*${exam.title}*»!`,
