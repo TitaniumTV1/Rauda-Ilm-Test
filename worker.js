@@ -85,6 +85,25 @@ function isAdmin(userId, env) {
   return ids.includes(String(userId));
 }
 
+// Отправка уведомления всем администраторам
+async function notifyAdmins(env, text, replyMarkup = null) {
+  const raw = env.ADMIN_IDS || "";
+  const adminIds = raw.split(",").map(s => s.trim()).filter(Boolean);
+
+  for (const adminId of adminIds) {
+    try {
+      await tg(env, "sendMessage", {
+        chat_id: adminId,
+        text: text,
+        reply_markup: replyMarkup,
+        parse_mode: "Markdown"
+      });
+    } catch (e) {
+      console.error(`Не удалось отправить уведомление админу ${adminId}:`, e);
+    }
+  }
+}
+
 // ================= БАЗА ДАННЫХ CLOUDFLARE KV =================
 async function getDB(env) {
   const data = await env.BOT_KV.get("DB_MAIN", "json");
@@ -554,11 +573,9 @@ function resolveStudentTargetExamId(user) {
   if (user.temp?.viewExamId && user.attempts?.[user.temp.viewExamId]) {
     return user.temp.viewExamId;
   }
-  // Ищем экзамен, где открыта пересдача
   for (const [exId, att] of Object.entries(user.attempts || {})) {
     if (att && att.canRetake) return exId;
   }
-  // Иначе берем последний сданный
   const entries = getCompletedOrRetakeEntries(user);
   return entries.length ? entries[entries.length - 1][0] : null;
 }
@@ -858,7 +875,7 @@ async function handleMessage(msg, env) {
     return;
   }
 
-  // Выбор экзамена учеником по кнопке "📘 1. ..." (работает даже если state сбился)
+  // Выбор экзамена учеником по кнопке "📘 1. ..."
   const studentExamMatch = text.match(/^📘\s*(\d+)\./);
   if (studentExamMatch) {
     const idx = parseInt(studentExamMatch[1], 10) - 1;
@@ -870,7 +887,7 @@ async function handleMessage(msg, env) {
     }
   }
 
-  // Глобальная обработка кнопок карточки экзамена ученика (работает независимо от state)
+  // Глобальная обработка кнопок карточки экзамена ученика
   if (
     text === "📜 Получить сертификат повторно (PDF)" ||
     text === "📄 Скачать детальный разбор ответов (TXT)" ||
@@ -954,9 +971,20 @@ async function handleMessage(msg, env) {
     }
 
     if (text === "🔄 Запросить возможность пересдачи") {
+      const studentName = [msg.from.first_name, msg.from.last_name].filter(Boolean).join(" ") || "Без имени";
+      const username = msg.from.username ? `@${msg.from.username}` : "нет username";
+
+      const adminAlertText =
+        `🚨 *Новый запрос на пересдачу!*\n\n` +
+        `👤 Ученик: ${studentName} (${username})\n` +
+        `🆔 Telegram ID: \`${userId}\`\n` +
+        `📘 Предмет: *${ex.title}*`;
+
+      await notifyAdmins(env, adminAlertText);
+
       await tg(env, "sendMessage", {
         chat_id: chatId,
-        text: `🔄 *Запрос на пересдачу экзамена «${ex.title}»*\n\nПерешлите это сообщение преподавателю или администратору.\n👤 Ваш Telegram ID: \`${userId}\``,
+        text: `✅ *Ваш запрос успешно отправлен администраторам!*\n\nОжидайте, преподаватель проверит ваш результат и откроет пересдачу.`,
         reply_markup: getStudentExamDetailKb(ex, att),
         parse_mode: "Markdown"
       });
@@ -1440,12 +1468,10 @@ async function handleMessage(msg, env) {
       return;
     }
 
-    // Если админ выдает пересдачу самому себе (для теста), используем текущий объект user
     const isSelf = String(targetId) === String(userId);
     const targetUser = isSelf ? user : await getUserData(env, targetId);
     if (!targetUser.attempts) targetUser.attempts = {};
 
-    // Если попытка была удалена ранее или еще не существовала — создаем запись
     if (!targetUser.attempts[examId]) {
       targetUser.attempts[examId] = {
         status: "cancelled",
@@ -1468,7 +1494,6 @@ async function handleMessage(msg, env) {
       targetUser.temp = { ...targetUser.temp, viewExamId: examId };
       await saveUserData(env, targetId, targetUser);
 
-      // Отправляем ученику сообщение И СРАЗУ прикрепляем нижнюю клавиатуру с кнопкой пересдачи
       await tg(env, "sendMessage", {
         chat_id: targetId,
         text:
