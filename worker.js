@@ -133,18 +133,45 @@ function findActiveAttemptExamId(user) {
 function ensureLayout(exam) {
   if (!exam.layout) {
     exam.layout = {
-      fontKey: "roboto",
-      name:  { dx: 0, y: 480, size: 42, color: "green" },
-      grade: { dx: 0, y: 340, size: 32, onlyWord: false, color: "dark" },
-      date:  { dx: 0, y: 200, size: 22, hide: false, color: "gray" }
+      fontKey: "tiktoksans",
+      name:    { dx: 0, y: 120, size: 36, color: "green", align: "center", hide: false },
+      subject: { dx: 0, y: 240, size: 22, color: "black", align: "center", hide: false },
+      sheikh:  { dx: 0, y: 205, size: 20, color: "dark",  align: "center", hide: false },
+      grade:   { dx: 0, y: 540, size: 26, color: "white", align: "center", hide: false, format: "num_word" },
+      date:    { dx: 0, y: 540, size: 26, color: "white", align: "center", hide: false }
     };
   }
+
   if (!exam.layout.fontKey || !FONTS[exam.layout.fontKey]) {
     exam.layout.fontKey = "roboto";
   }
-  if (!exam.layout.name.color) exam.layout.name.color = "green";
-  if (!exam.layout.grade.color) exam.layout.grade.color = "dark";
-  if (!exam.layout.date.color) exam.layout.date.color = "gray";
+
+  const defaults = {
+    name:    { dx: 0, y: 120, size: 36, color: "green", align: "center", hide: false },
+    subject: { dx: 0, y: 240, size: 22, color: "black", align: "center", hide: false },
+    sheikh:  { dx: 0, y: 205, size: 20, color: "dark",  align: "center", hide: false },
+    grade:   { dx: 0, y: 540, size: 26, color: "white", align: "center", hide: false, format: "num_word" },
+    date:    { dx: 0, y: 540, size: 26, color: "white", align: "center", hide: false }
+  };
+
+  for (const key of ["name", "subject", "sheikh", "grade", "date"]) {
+    if (!exam.layout[key]) {
+      exam.layout[key] = { ...defaults[key] };
+    } else {
+      if (typeof exam.layout[key].dx !== "number") exam.layout[key].dx = defaults[key].dx;
+      if (typeof exam.layout[key].y !== "number") exam.layout[key].y = defaults[key].y;
+      if (typeof exam.layout[key].size !== "number") exam.layout[key].size = defaults[key].size;
+      if (!exam.layout[key].color) exam.layout[key].color = defaults[key].color;
+      if (!exam.layout[key].align) exam.layout[key].align = defaults[key].align;
+      if (typeof exam.layout[key].hide !== "boolean") exam.layout[key].hide = false;
+    }
+  }
+
+  // Совместимость со старым параметром onlyWord для оценки
+  if (!exam.layout.grade.format) {
+    exam.layout.grade.format = exam.layout.grade.onlyWord ? "word" : "num_word";
+  }
+
   return exam.layout;
 }
 
@@ -156,8 +183,33 @@ function parseColor(cName) {
     case "dark":  return rgb(0.2, 0.2, 0.2);
     case "gray":  return rgb(0.4, 0.4, 0.4);
     case "green":
-    default:      return rgb(0.1, 0.25, 0.15);
+    default:      return rgb(0.1, 0.35, 0.18);
   }
+}
+
+function formatGradeByMode(gradeClean, formatMode) {
+  const norm = (gradeClean || "Отлично").toLowerCase();
+  let num = "5";
+  let wordLower = "отлично";
+
+  if (norm.includes("хорошо")) {
+    num = "4";
+    wordLower = "хорошо";
+  } else if (norm.includes("удовл")) {
+    num = "3";
+    wordLower = "удовл.";
+  } else if (norm.includes("не сдан")) {
+    num = "2";
+    wordLower = "не сдано";
+  }
+
+  if (formatMode === "num_word") {
+    return `${num} (${wordLower})`;
+  }
+  if (formatMode === "word") {
+    return gradeClean;
+  }
+  return `Оценка: ${gradeClean}`;
 }
 
 // ================= КОНСТРУКТОРЫ НИЖНИХ КЛАВИАТУР =================
@@ -240,6 +292,7 @@ function getAdminMainKb() {
 function getAdminExamManageKb() {
   return buildReplyKb([
     [{ text: "➕ Добавить вопрос" }, { text: "🔑 Изменить пароль" }],
+    [{ text: "📘 Изменить предмет" }, { text: "👳‍♂️ Изменить шейха" }],
     [{ text: "🖼 Загрузить шаблон" }, { text: "🎛 Пульт сертификата" }],
     [{ text: "🔄 Выдать пересдачу по ID" }, { text: "🎯 Изменить проходной %" }],
     [{ text: "🗑 Очистить вопросы" }, { text: "❌ Удалить экзамен" }],
@@ -252,6 +305,10 @@ function getJoystickReplyKb(layout, activeTarget) {
   const rows = [
     [
       { text: `${activeTarget === "name" ? "🟢 " : ""}👤 Имя` },
+      { text: `${activeTarget === "subject" ? "🟢 " : ""}📚 Предмет` },
+      { text: `${activeTarget === "sheikh" ? "🟢 " : ""}👳‍♂️ Шейх` }
+    ],
+    [
       { text: `${activeTarget === "grade" ? "🟢 " : ""}⭐️ Оценка` },
       { text: `${activeTarget === "date" ? "🟢 " : ""}📅 Дата` }
     ],
@@ -262,19 +319,29 @@ function getJoystickReplyKb(layout, activeTarget) {
       { text: "⬇️ Ниже (-20)" }
     ],
     [
-      { text: "⬅️ Влево" },
-      { text: "🎯 По центру" },
-      { text: "➡️ Вправо" }
+      { text: "⏪ Влево (-20)" },
+      { text: "◀️ Влево (-5)" },
+      { text: "🎯 Сброс X (0)" },
+      { text: "▶️ Вправо (+5)" },
+      { text: "⏩ Вправо (+20)" }
     ],
     [
-      { text: "➖ Шрифт мельче" },
-      { text: "➕ Шрифт крупнее" }
+      { text: `${cur.align === "left" ? "✅ " : ""}📌 Слева` },
+      { text: `${cur.align === "center" ? "✅ " : ""}🎯 По центру` },
+      { text: `${cur.align === "right" ? "✅ " : ""}📌 Справа` }
+    ],
+    [
+      { text: "➖ Шрифт (-2)" },
+      { text: "🔉 Шрифт (-1)" },
+      { text: "🔊 Шрифт (+1)" },
+      { text: "➕ Шрифт (+2)" }
     ],
     [
       { text: `${cur.color === "green" ? "✅ " : ""}🎨 Зеленый` },
       { text: `${cur.color === "gold" ? "✅ " : ""}🎨 Золотой` },
       { text: `${cur.color === "black" ? "✅ " : ""}🎨 Черный` },
-      { text: `${cur.color === "white" ? "✅ " : ""}🎨 Белый` }
+      { text: `${cur.color === "white" ? "✅ " : ""}🎨 Белый` },
+      { text: `${cur.color === "dark" ? "✅ " : ""}🎨 Темно-серый` }
     ],
     [
       { text: `${layout.fontKey === "roboto" ? "✅ " : ""}🔤 Roboto` },
@@ -288,10 +355,17 @@ function getJoystickReplyKb(layout, activeTarget) {
   ];
 
   if (activeTarget === "grade") {
-    rows.push([{ text: cur.onlyWord ? "📝 Писать «Оценка: Отлично»" : "📝 Писать только «Отлично»" }]);
-  }
-  if (activeTarget === "date") {
-    rows.push([{ text: cur.hide ? "👁 Показать дату на сертификате" : "🙈 Скрыть дату с сертификата" }]);
+    let fmtLabel = "📝 Формат: 4 (хорошо)";
+    if (cur.format === "word") fmtLabel = "📝 Формат: Хорошо";
+    else if (cur.format === "prefix") fmtLabel = "📝 Формат: Оценка: Хорошо";
+    rows.push([
+      { text: fmtLabel },
+      { text: cur.hide ? "👁 Показать на сертификате" : "🙈 Скрыть с сертификата" }
+    ]);
+  } else {
+    rows.push([
+      { text: cur.hide ? "👁 Показать на сертификате" : "🙈 Скрыть с сертификата" }
+    ]);
   }
 
   rows.push([
@@ -349,9 +423,10 @@ async function startStudentExam(chatId, userId, examId, exam, user, env) {
   user.temp = { examId, qIndex: 0 };
   await saveUserData(env, userId, user);
 
+  const sheikhLine = exam.sheikh ? `\n👳‍♂️ *Шейх:* ${exam.sheikh}` : "";
   await tg(env, "sendMessage", {
     chat_id: chatId,
-    text: `🎓 *Экзамен начался!*\n📚 *${exam.title}*\n\nВсего вопросов: ${exam.questions.length}.\nИспользуйте кнопки внизу экрана для выбора ответов и переключения вопросов.`,
+    text: `🎓 *Экзамен начался!*\n📚 *${exam.title}*${sheikhLine}\n\nВсего вопросов: ${exam.questions.length}.\nИспользуйте кнопки внизу экрана для выбора ответов и переключения вопросов.`,
     parse_mode: "Markdown"
   });
 
@@ -433,6 +508,7 @@ async function sendStudentExamDetail(chatId, userId, examId, db, user, env) {
 
   const text =
     `📘 *Предмет:* ${ex.title}\n` +
+    (ex.sheikh ? `👳‍♂️ *Шейх:* ${ex.sheikh}\n` : "") +
     `📅 *Дата сдачи:* ${dateText}\n` +
     `🎯 *Оценка:* ${gradeText}\n` +
     `📊 *Правильных ответов:* ${scoreDetail}\n` +
@@ -511,12 +587,18 @@ async function sendExamManage(chatId, userId, db, examId, user, env) {
   user.temp = { examId };
   await saveUserData(env, userId, user);
 
+  const tplStatus = ex.hasTemplate
+    ? `✅ Загружен (${(ex.tplFormat || "png").toUpperCase()})`
+    : "❌ Стандартный";
+
   const text =
-    `📋 *Управление экзаменом:* ${ex.title}\n` +
+    `📋 *Управление экзаменом*\n\n` +
+    `📘 *Предмет (книга):* ${ex.title}\n` +
+    `👳‍♂️ *Шейх:* ${ex.sheikh || "не указан"}\n` +
     `🔑 *Пароль:* \`${ex.password || "не задан"}\`\n` +
     `🔢 *Вопросов:* ${ex.questions.length}\n` +
     `🎯 *Проходной балл:* ${ex.passPercent}%\n` +
-    `🖼 *Шаблон сертификата:* ${ex.hasTemplate ? "✅ Загружен" : "❌ Стандартный"}\n` +
+    `🖼 *Шаблон сертификата:* ${tplStatus}\n` +
     `🔤 *Шрифт:* ${FONTS[ex.layout.fontKey]?.name || "Roboto"}\n\n` +
     `_Выберите нужное действие на нижней клавиатуре:_`;
 
@@ -532,7 +614,8 @@ async function sendCertJoystick(chatId, userId, db, examId, target, user, env) {
   const ex = db.exams[examId];
   if (!ex) return;
   const layout = ensureLayout(ex);
-  const activeTarget = ["name", "grade", "date"].includes(target) ? target : "name";
+  const validTargets = ["name", "subject", "sheikh", "grade", "date"];
+  const activeTarget = validTargets.includes(target) ? target : "name";
   const cur = layout[activeTarget];
 
   user.state = "ADM_JOYSTICK";
@@ -540,16 +623,25 @@ async function sendCertJoystick(chatId, userId, db, examId, target, user, env) {
   await saveUserData(env, userId, user);
 
   const titles = {
-    name: "👤 Имя и Фамилия",
+    name: "👤 Имя ученика",
+    subject: `📚 Предмет («${ex.title}»)`,
+    sheikh: `👳‍♂️ Шейх («${ex.sheikh || "не задан"}»)`,
     grade: "⭐️ Оценка",
     date: "📅 Дата выдачи"
   };
 
-  let extra = "";
+  const alignNames = {
+    left: "Слева",
+    center: "По центру",
+    right: "Справа"
+  };
+
+  let extra = `\n• Статус: *${cur.hide ? "🙈 Скрыто" : "👁 Показывается"}*`;
   if (activeTarget === "grade") {
-    extra = `\n• Формат: *${cur.onlyWord ? "Только оценка («Отлично»)" : "Со словом («Оценка: Отлично»)"}*`;
-  } else if (activeTarget === "date") {
-    extra = `\n• Показ даты: *${cur.hide ? "Скрыта" : "Показывается"}*`;
+    const fmtDesc = cur.format === "num_word"
+      ? "4 (хорошо) / 5 (отлично)"
+      : (cur.format === "word" ? "Только слово («Отлично»)" : "Со словом («Оценка: Отлично»)");
+    extra += `\n• Формат оценки: *${fmtDesc}*`;
   }
 
   const text =
@@ -557,8 +649,9 @@ async function sendCertJoystick(chatId, userId, db, examId, target, user, env) {
     `Сейчас настраиваем: *${titles[activeTarget]}*\n` +
     `• Шрифт: *${FONTS[layout.fontKey]?.name || "Roboto"}*\n` +
     `• Высота (Y): \`${cur.y}\` | Сдвиг (X): \`${cur.dx}\`\n` +
+    `• Выравнивание: *${alignNames[cur.align || "center"]}*\n` +
     `• Размер шрифта: \`${cur.size}\` | Цвет: *${cur.color}*${extra}\n\n` +
-    `_Нажимайте кнопки внизу экрана для настройки и проверки сертификата:_`;
+    `_Нажимайте кнопки внизу экрана для калибровки и проверки сертификата:_`;
 
   await tg(env, "sendMessage", {
     chat_id: chatId,
@@ -744,6 +837,7 @@ async function handleMessage(msg, env) {
       let resText =
         `🎓 *ЭКЗАМЕН ЗАВЕРШЕН!*\n` +
         `📘 Предмет: *${exam.title}*\n` +
+        (exam.sheikh ? `👳‍♂️ Шейх: *${exam.sheikh}*\n` : "") +
         `📅 Дата: ${att.dateStr}\n` +
         `📊 Результат: *${percent.toFixed(1)}%*\n\n` +
         `✅ Правильно: ${correctCount} из ${total}\n` +
@@ -754,7 +848,7 @@ async function handleMessage(msg, env) {
         resText +=
           `🎉 *ПОЗДРАВЛЯЕМ!*\n` +
           `Вы успешно сдали экзамен!\n` +
-          `📝 Пожалуйста, напишите в чат вашу **Фамилию и Имя** для сертификата:`;
+          `📝 Пожалуйста, напишите в чат ваши **Имя и Фамилию** (или кунью) для сертификата:`;
         user.state = "WAIT_NAME";
         user.temp = { examId };
         await saveUserData(env, userId, user);
@@ -914,7 +1008,7 @@ async function handleMessage(msg, env) {
         await saveUserData(env, userId, user);
         await tg(env, "sendMessage", {
           chat_id: chatId,
-          text: "📝 Введите ваши Фамилию и Имя для генерации сертификата:",
+          text: "📝 Введите ваши Имя и Фамилию для генерации сертификата:",
           reply_markup: { remove_keyboard: true }
         });
         return;
@@ -1067,7 +1161,7 @@ async function handleMessage(msg, env) {
     await saveUserData(env, userId, user);
     await tg(env, "sendMessage", {
       chat_id: chatId,
-      text: "Введите название нового экзамена (например: *Акыда — 1 семестр*):",
+      text: "📘 Введите название предмета или книги (например: *Становление знаний у праведных предшественников*):",
       reply_markup: getCancelKb("◀️ Отмена"),
       parse_mode: "Markdown"
     });
@@ -1131,13 +1225,39 @@ async function handleMessage(msg, env) {
       return;
     }
 
+    if (text === "📘 Изменить предмет") {
+      user.state = "ADM_EDIT_TITLE";
+      user.temp = { examId };
+      await saveUserData(env, userId, user);
+      await tg(env, "sendMessage", {
+        chat_id: chatId,
+        text: `📘 Текущий предмет: *${ex.title}*\n\nВведите новое название предмета (книги) для экзамена и сертификата:`,
+        reply_markup: getCancelKb("◀️ Отмена"),
+        parse_mode: "Markdown"
+      });
+      return;
+    }
+
+    if (text === "👳‍♂️ Изменить шейха") {
+      user.state = "ADM_EDIT_SHEIKH";
+      user.temp = { examId };
+      await saveUserData(env, userId, user);
+      await tg(env, "sendMessage", {
+        chat_id: chatId,
+        text: `👳‍♂️ Текущий шейх: *${ex.sheikh || "не указан"}*\n\nВведите имя шейха для отображения на сертификате (или отправьте «-», чтобы очистить):`,
+        reply_markup: getCancelKb("◀️ Отмена"),
+        parse_mode: "Markdown"
+      });
+      return;
+    }
+
     if (text === "🖼 Загрузить шаблон") {
       user.state = "ADM_UPLOAD_TPL";
       user.temp = { examId };
       await saveUserData(env, userId, user);
       await tg(env, "sendMessage", {
         chat_id: chatId,
-        text: `🖼 *Загрузка шаблона сертификата («${ex.title}»)*\n\nОтправьте картинку (PNG или JPG):`,
+        text: `🖼 *Загрузка шаблона сертификата («${ex.title}»)*\n\nОтправьте картинку (` + "`PNG`" + ` / ` + "`JPG`" + `) или готовый файл ` + "`PDF`" + `:`,
         reply_markup: getCancelKb("◀️ Отмена"),
         parse_mode: "Markdown"
       });
@@ -1208,9 +1328,12 @@ async function handleMessage(msg, env) {
     }
 
     const layout = ensureLayout(ex);
-    let activeTarget = ["name", "grade", "date"].includes(user.temp?.joyTarget) ? user.temp.joyTarget : "name";
+    const validTargets = ["name", "subject", "sheikh", "grade", "date"];
+    let activeTarget = validTargets.includes(user.temp?.joyTarget) ? user.temp.joyTarget : "name";
 
     if (text.includes("👤 Имя")) activeTarget = "name";
+    else if (text.includes("📚 Предмет")) activeTarget = "subject";
+    else if (text.includes("👳‍♂️ Шейх")) activeTarget = "sheikh";
     else if (text.includes("⭐️ Оценка")) activeTarget = "grade";
     else if (text.includes("📅 Дата")) activeTarget = "date";
 
@@ -1220,36 +1343,49 @@ async function handleMessage(msg, env) {
     else if (text === "🔼 Выше (+5)") item.y += 5;
     else if (text === "🔽 Ниже (-5)") item.y = Math.max(0, item.y - 5);
     else if (text === "⬇️ Ниже (-20)") item.y = Math.max(0, item.y - 20);
-    else if (text === "⬅️ Влево") item.dx -= 20;
-    else if (text === "🎯 По центру") item.dx = 0;
-    else if (text === "➡️ Вправо") item.dx += 20;
-    else if (text === "➖ Шрифт мельче") item.size = Math.max(10, item.size - 2);
-    else if (text === "➕ Шрифт крупнее") item.size += 2;
+    else if (text === "⏪ Влево (-20)" || text === "⬅️ Влево") item.dx -= 20;
+    else if (text === "◀️ Влево (-5)") item.dx -= 5;
+    else if (text === "🎯 Сброс X (0)") item.dx = 0;
+    else if (text === "▶️ Вправо (+5)") item.dx += 5;
+    else if (text === "⏩ Вправо (+20)" || text === "➡️ Вправо") item.dx += 20;
+    else if (text.includes("📌 Слева")) item.align = "left";
+    else if (text.includes("🎯 По центру")) item.align = "center";
+    else if (text.includes("📌 Справа")) item.align = "right";
+    else if (text === "➖ Шрифт (-2)" || text === "➖ Шрифт мельче") item.size = Math.max(8, item.size - 2);
+    else if (text === "🔉 Шрифт (-1)") item.size = Math.max(8, item.size - 1);
+    else if (text === "🔊 Шрифт (+1)") item.size += 1;
+    else if (text === "➕ Шрифт (+2)" || text === "➕ Шрифт крупнее") item.size += 2;
     else if (text.includes("🎨 Зеленый")) item.color = "green";
     else if (text.includes("🎨 Золотой")) item.color = "gold";
     else if (text.includes("🎨 Черный")) item.color = "black";
     else if (text.includes("🎨 Белый")) item.color = "white";
+    else if (text.includes("🎨 Темно-серый")) item.color = "dark";
     else if (text.includes("🔤 Roboto")) layout.fontKey = "roboto";
     else if (text.includes("🔤 Montserrat")) layout.fontKey = "montserrat";
     else if (text.includes("🔤 Cormorant")) layout.fontKey = "cormorant";
     else if (text.includes("🔤 TikTok Sans")) layout.fontKey = "tiktoksans";
     else if (text.includes("🔤 Свой .ttf")) layout.fontKey = "custom";
-    else if (text.startsWith("📝 Писать") && activeTarget === "grade") item.onlyWord = !item.onlyWord;
-    else if ((text.startsWith("👁 Показать дату") || text.startsWith("🙈 Скрыть дату")) && activeTarget === "date") item.hide = !item.hide;
+    else if (text.startsWith("📝 Формат:") && activeTarget === "grade") {
+      if (item.format === "num_word") item.format = "word";
+      else if (item.format === "word") item.format = "prefix";
+      else item.format = "num_word";
+    } else if (text.includes("Показать на сертификате") || text.includes("Скрыть с сертификата")) {
+      item.hide = !item.hide;
+    }
 
     await saveDB(env, db);
 
     if (text === "👁 Пробный PDF-сертификат") {
       const kb = getJoystickReplyKb(layout, activeTarget);
       await tg(env, "sendMessage", { chat_id: chatId, text: "⏳ Генерирую пробный сертификат...", reply_markup: kb });
-      const pdfBytes = await generatePdfCertificate(env, ex, "Джавид Абу Сафия", "Отлично");
+      const pdfBytes = await generatePdfCertificate(env, ex, "Сафия Абу", "Хорошо");
       await sendDocument(
         env,
         chatId,
         pdfBytes,
         `preview_${examId}_${Date.now()}.pdf`,
         "application/pdf",
-        `👁 Пробный сертификат «${ex.title}»\nШрифт: ${FONTS[layout.fontKey]?.name || layout.fontKey}`,
+        `👁 Пробный сертификат «${ex.title}»\nШейх: ${ex.sheikh || "—"}\nШрифт: ${FONTS[layout.fontKey]?.name || layout.fontKey}`,
         kb
       );
       return;
@@ -1298,8 +1434,22 @@ async function handleMessage(msg, env) {
     return;
   }
 
+  // Создание нового экзамена: Название -> Шейх -> Пароль -> Проходной %
   if (user.state === "ADM_NEW_EXAM_TITLE" && text) {
     user.temp.title = text;
+    user.state = "ADM_NEW_EXAM_SHEIKH";
+    await saveUserData(env, userId, user);
+    await tg(env, "sendMessage", {
+      chat_id: chatId,
+      text: "👳‍♂️ Введите имя шейха / автора книги (например: *шейха Салиха аль Фаузана*)\nИли отправьте `-`, если указывать не нужно:",
+      reply_markup: getCancelKb("◀️ Отмена"),
+      parse_mode: "Markdown"
+    });
+    return;
+  }
+
+  if (user.state === "ADM_NEW_EXAM_SHEIKH" && text) {
+    user.temp.sheikh = text.trim() === "-" ? "" : text.trim();
     user.state = "ADM_NEW_EXAM_PWD";
     await saveUserData(env, userId, user);
     await tg(env, "sendMessage", {
@@ -1330,17 +1480,14 @@ async function handleMessage(msg, env) {
     db.exams[examId] = {
       id: examId,
       title: user.temp.title,
+      sheikh: user.temp.sheikh || "",
       password: user.temp.password,
       passPercent: pass,
       hasTemplate: false,
-      layout: {
-        fontKey: "tiktoksans",
-        name:  { dx: 0, y: 480, size: 42, color: "green" },
-        grade: { dx: 0, y: 340, size: 32, onlyWord: false, color: "dark" },
-        date:  { dx: 0, y: 200, size: 22, hide: false, color: "gray" }
-      },
+      layout: ensureLayout({}).layout,
       questions: []
     };
+    ensureLayout(db.exams[examId]);
     await saveDB(env, db);
     await sendExamManage(chatId, userId, db, examId, user, env);
     return;
@@ -1351,6 +1498,24 @@ async function handleMessage(msg, env) {
     db.exams[examId].password = text.trim();
     await saveDB(env, db);
     await tg(env, "sendMessage", { chat_id: chatId, text: "✅ Пароль успешно обновлен!" });
+    await sendExamManage(chatId, userId, db, examId, user, env);
+    return;
+  }
+
+  if (user.state === "ADM_EDIT_TITLE" && text) {
+    const examId = user.temp.examId;
+    db.exams[examId].title = text.trim();
+    await saveDB(env, db);
+    await tg(env, "sendMessage", { chat_id: chatId, text: "✅ Название предмета обновлено!" });
+    await sendExamManage(chatId, userId, db, examId, user, env);
+    return;
+  }
+
+  if (user.state === "ADM_EDIT_SHEIKH" && text) {
+    const examId = user.temp.examId;
+    db.exams[examId].sheikh = text.trim() === "-" ? "" : text.trim();
+    await saveDB(env, db);
+    await tg(env, "sendMessage", { chat_id: chatId, text: "✅ Имя шейха обновлено!" });
     await sendExamManage(chatId, userId, db, examId, user, env);
     return;
   }
@@ -1370,16 +1535,20 @@ async function handleMessage(msg, env) {
     const fileInfo = await tg(env, "getFile", { file_id: fileId });
 
     if (fileInfo.ok) {
+      const filePath = (fileInfo.result.file_path || "").toLowerCase();
       const fileRes = await fetch(`https://api.telegram.org/file/bot${env.BOT_TOKEN}/${fileInfo.result.file_path}`);
       const buf = await fileRes.arrayBuffer();
-      const isPng = fileInfo.result.file_path.toLowerCase().endsWith(".png");
+
+      let tplFormat = "jpg";
+      if (filePath.endsWith(".png")) tplFormat = "png";
+      else if (filePath.endsWith(".pdf")) tplFormat = "pdf";
 
       await env.BOT_KV.put(`TPL_${examId}`, buf);
       db.exams[examId].hasTemplate = true;
-      db.exams[examId].tplFormat = isPng ? "png" : "jpg";
+      db.exams[examId].tplFormat = tplFormat;
       await saveDB(env, db);
 
-      await tg(env, "sendMessage", { chat_id: chatId, text: "✅ Шаблон сертификата сохранен!" });
+      await tg(env, "sendMessage", { chat_id: chatId, text: `✅ Шаблон сертификата (${tplFormat.toUpperCase()}) успешно сохранен!` });
       await sendExamManage(chatId, userId, db, examId, user, env);
     }
     return;
@@ -1558,11 +1727,64 @@ async function loadFontBytes(env, fontKey) {
   return await fallback.arrayBuffer();
 }
 
+function calcAlignedX(pageWidth, textWidth, cfg) {
+  const align = cfg.align || "center";
+  const dx = cfg.dx || 0;
+  if (align === "left") {
+    return 80 + dx;
+  }
+  if (align === "right") {
+    return pageWidth - 80 - textWidth + dx;
+  }
+  return (pageWidth - textWidth) / 2 + dx;
+}
+
 async function generatePdfCertificate(env, exam, fullName, gradeClean, customDateStr = null) {
-  const pdfDoc = await PDFDocument.create();
-  pdfDoc.registerFontkit(fontkit);
+  let pdfDoc;
+  let page;
+  let width = 1200;
+  let height = 850;
 
   const layout = ensureLayout(exam);
+
+  if (exam.hasTemplate) {
+    const tplBytes = await env.BOT_KV.get(`TPL_${exam.id}`, "arrayBuffer");
+    if (tplBytes) {
+      if (exam.tplFormat === "pdf") {
+        pdfDoc = await PDFDocument.load(tplBytes);
+        pdfDoc.registerFontkit(fontkit);
+        page = pdfDoc.getPages()[0];
+        const size = page.getSize();
+        width = size.width;
+        height = size.height;
+      } else {
+        pdfDoc = await PDFDocument.create();
+        pdfDoc.registerFontkit(fontkit);
+        const bgImage = exam.tplFormat === "png"
+          ? await pdfDoc.embedPng(tplBytes)
+          : await pdfDoc.embedJpg(tplBytes);
+        width = bgImage.width;
+        height = bgImage.height;
+        page = pdfDoc.addPage([width, height]);
+        page.drawImage(bgImage, { x: 0, y: 0, width, height });
+      }
+    }
+  }
+
+  if (!pdfDoc) {
+    pdfDoc = await PDFDocument.create();
+    pdfDoc.registerFontkit(fontkit);
+    page = pdfDoc.addPage([width, height]);
+    page.drawRectangle({
+      x: 30,
+      y: 30,
+      width: width - 60,
+      height: height - 60,
+      borderColor: rgb(0.7, 0.58, 0.3),
+      borderWidth: 5
+    });
+  }
+
   let customFont;
   try {
     const fontBytes = await loadFontBytes(env, layout.fontKey);
@@ -1572,68 +1794,36 @@ async function generatePdfCertificate(env, exam, fullName, gradeClean, customDat
     customFont = await pdfDoc.embedFont(fallbackBytes);
   }
 
-  let width = 1200;
-  let height = 850;
-  let bgImage = null;
-
-  if (exam.hasTemplate) {
-    const tplBytes = await env.BOT_KV.get(`TPL_${exam.id}`, "arrayBuffer");
-    if (tplBytes) {
-      bgImage = exam.tplFormat === "png"
-        ? await pdfDoc.embedPng(tplBytes)
-        : await pdfDoc.embedJpg(tplBytes);
-      width = bgImage.width;
-      height = bgImage.height;
-    }
-  }
-
-  const page = pdfDoc.addPage([width, height]);
-
-  if (bgImage) {
-    page.drawImage(bgImage, { x: 0, y: 0, width, height });
-  } else {
-    page.drawRectangle({ x: 30, y: 30, width: width - 60, height: height - 60, borderColor: rgb(0.7, 0.58, 0.3), borderWidth: 5 });
-    const title = "СЕРТИФИКАТ";
-    const tWidth = customFont.widthOfTextAtSize(title, 54);
-    page.drawText(title, { x: (width - tWidth) / 2, y: height - 200, size: 54, font: customFont, color: rgb(0.15, 0.15, 0.15) });
-  }
+  const drawItem = (str, cfg) => {
+    if (!str || cfg.hide) return;
+    const textWidth = customFont.widthOfTextAtSize(str, cfg.size);
+    page.drawText(str, {
+      x: calcAlignedX(width, textWidth, cfg),
+      y: cfg.y,
+      size: cfg.size,
+      font: customFont,
+      color: parseColor(cfg.color)
+    });
+  };
 
   // 1. Имя ученика
-  const nCfg = layout.name;
-  const nameWidth = customFont.widthOfTextAtSize(fullName, nCfg.size);
-  page.drawText(fullName, {
-    x: (width - nameWidth) / 2 + (nCfg.dx || 0),
-    y: nCfg.y,
-    size: nCfg.size,
-    font: customFont,
-    color: parseColor(nCfg.color)
-  });
+  drawItem(fullName, layout.name);
 
-  // 2. Оценка
-  const gCfg = layout.grade;
-  const gradeText = gCfg.onlyWord ? gradeClean : `Оценка: ${gradeClean}`;
-  const gradeWidth = customFont.widthOfTextAtSize(gradeText, gCfg.size);
-  page.drawText(gradeText, {
-    x: (width - gradeWidth) / 2 + (gCfg.dx || 0),
-    y: gCfg.y,
-    size: gCfg.size,
-    font: customFont,
-    color: parseColor(gCfg.color)
-  });
+  // 2. Название предмета (книги)
+  drawItem(exam.title, layout.subject);
 
-  // 3. Дата
-  const dCfg = layout.date;
-  if (!dCfg.hide) {
-    const dateStr = customDateStr || new Date().toLocaleDateString("ru-RU");
-    const dateWidth = customFont.widthOfTextAtSize(dateStr, dCfg.size);
-    page.drawText(dateStr, {
-      x: (width - dateWidth) / 2 + (dCfg.dx || 0),
-      y: dCfg.y,
-      size: dCfg.size,
-      font: customFont,
-      color: parseColor(dCfg.color)
-    });
+  // 3. Имя шейха
+  if (exam.sheikh) {
+    drawItem(exam.sheikh, layout.sheikh);
   }
+
+  // 4. Оценка
+  const gradeText = formatGradeByMode(gradeClean, layout.grade.format);
+  drawItem(gradeText, layout.grade);
+
+  // 5. Дата
+  const dateStr = customDateStr || new Date().toLocaleDateString("ru-RU");
+  drawItem(dateStr, layout.date);
 
   return await pdfDoc.save();
 }
